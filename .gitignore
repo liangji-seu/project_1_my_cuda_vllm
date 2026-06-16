@@ -1,0 +1,15 @@
+build/
+*.o
+*.so
+*.a
+*.bin
+*.out
+*.cu.o
+compile_commands.json
+.cache/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+models/
