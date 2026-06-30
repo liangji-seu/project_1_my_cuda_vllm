@@ -8,7 +8,7 @@
 
 namespace base {
 
-class Buffer {
+class Buffer : public NoCopyable {
 private:
     void* ptr                                          = nullptr;             // 内存地址
     size_t byte_size                                   = 0;                   // 内存大小
