@@ -31,7 +31,7 @@ add_library(my_cuda_vllm SHARED
 )
 
 target_link_libraries(my_cuda_vllm
-  glog::glog gtest gtest_main pthread cudart armadillo
+  glog::glog GTest::gtest GTest::gtest_main pthread cudart armadillo
 )
 
 target_link_directories(my_cuda_vllm PUBLIC ${CMAKE_CUDA_COMPILER_LIBRARY_ROOT}/lib64)

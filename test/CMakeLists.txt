@@ -1,10 +1,10 @@
-add_executable(test_main test_main.cpp)
+add_executable(test_main test_main.cpp test_device_controller.cpp)
 
 target_link_libraries(test_main
     my_cuda_vllm
     glog::glog
-    gtest
-    gtest_main
+    GTest::gtest
+    GTest::gtest_main
     pthread
     cudart
 )
