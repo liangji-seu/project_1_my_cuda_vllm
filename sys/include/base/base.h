@@ -14,6 +14,8 @@ enum class DeviceType_t {
     GPU = 2,
 };
 
+
+
 // 属性基类：禁止拷贝构造
 class NoCopyable {
 protected:

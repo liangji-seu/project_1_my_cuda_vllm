@@ -42,3 +42,6 @@ target_include_directories(my_cuda_vllm PUBLIC
   ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES}
   ${PROJECT_SOURCE_DIR}/sys/include
 )
+
+# ---- Test target ----
+add_subdirectory(test)
