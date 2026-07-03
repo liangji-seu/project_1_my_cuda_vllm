@@ -16,8 +16,8 @@ Buffer::Buffer(size_t byte_size,
       flag_is_external(flag_is_external) {
     if(!ptr && controller){
         device_type = controller->get_device_type();
-        flag_is_external = false;
-        ptr = controller->mem_alloc(byte_size);
+        this->flag_is_external = false;
+        this->ptr = controller->mem_alloc(byte_size);
     }
 }
 
