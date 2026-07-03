@@ -1,3 +1,5 @@
+#include <cstring>
+
 #include <glog/logging.h>
 #include <gtest/gtest.h>
 
@@ -48,4 +50,29 @@ TEST(Buffer, get_flag_is_external) {
     base::Buffer buffer(32, nullptr, base::DeviceType_t::Unknown, cpu_controller, false);
 
     EXPECT_FALSE(buffer.get_flag_is_external());
+}
+
+TEST(Buffer, buffer_copy_from) {
+    auto cpu_controller = base::CPUDeviceControllerFactory::get_instance();
+    base::Buffer src(32, nullptr, base::DeviceType_t::Unknown, cpu_controller, false);
+    base::Buffer dst(32, nullptr, base::DeviceType_t::Unknown, cpu_controller, false);
+
+    // 写入源buffer
+    memset(src.get_ptr(), 0xAB, 32);
+    // 拷贝
+    dst.buffer_copy_from(src);
+
+    // 验证拷贝后的内容一致
+    EXPECT_EQ(memcmp(src.get_ptr(), dst.get_ptr(), 32), 0);
+}
+
+TEST(Buffer, buffer_self_allocate) {
+    auto cpu_controller = base::CPUDeviceControllerFactory::get_instance();
+    base::Buffer buffer(32, nullptr, base::DeviceType_t::Unknown, cpu_controller, false);
+
+    buffer.buffer_self_allocate();
+
+    // 重新分配后指针不应为空
+    EXPECT_NE(buffer.get_ptr(), nullptr);
+    EXPECT_EQ(buffer.get_byte_size(), 32);
 }
