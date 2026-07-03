@@ -57,7 +57,7 @@ public:
 //子类：cpu内存控制器
 class CPUDeviceController : public DeviceController {
 public:
-    explicit CPUDeviceController() = default;
+    explicit CPUDeviceController();
 
     //重写方法：分配，释放
     void* mem_alloc(size_t byte_size) override;
@@ -83,7 +83,7 @@ struct CudaMemoryBlock{
                     size_t byte_size,
                     bool busy) :
                     ptr(ptr), byte_size(byte_size), busy(busy) {};
-}
+};
 
 class GPUDeviceController : public DeviceController {
 
@@ -95,7 +95,7 @@ private:
 
 
 public:
-    explicit GPUDeviceController() = default;
+    explicit GPUDeviceController();
 
     //重写方法： 分配，释放
     void* mem_alloc(size_t byte_size) override;
@@ -115,7 +115,7 @@ private:
     static std::shared_ptr<CPUDeviceController> instance;
 
 public:
-    CPUDeviceControllerFactory();
+    
     static std::shared_ptr<CPUDeviceController> get_instance();
 };
 

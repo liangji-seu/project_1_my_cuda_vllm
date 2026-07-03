@@ -12,7 +12,7 @@ DeviceController::DeviceController(DeviceType_t device_type)
     : device_type(device_type) {}
 
 //查询
-DeviceType_t DeviceController::show_device_type() const {
+DeviceType_t DeviceController::get_device_type() const {
     return device_type;
 }
 
@@ -30,7 +30,7 @@ void DeviceController::mem_copy(const void* src, void* dst, size_t byte_size,
     //设置默认cuda流
     cudaStream_t stream_ = nullptr;
     if(stream){
-        stream_ = static_cast<CUstream_st*>(stream);
+        stream_ = static_cast<cudaStream_t>(stream);
     }
 
     //执行内存拷贝
@@ -128,7 +128,7 @@ void* CPUDeviceController::mem_alloc(size_t byte_size) {
 }
 
 void CPUDeviceController::mem_release(void* ptr) {
-    CHECK(ptr != nullptr){
+    if(ptr != nullptr){
         free(ptr);
     }
 }
@@ -142,7 +142,7 @@ void CPUDeviceController::mem_release(void* ptr) {
 
 // ---- GPUDeviceController ----
 
-GPUDeviceController::GPUDeviceController() : DeviceCOntroller(DeviceType_t::GPU){}
+GPUDeviceController::GPUDeviceController() : DeviceController(DeviceType_t::GPU){}
 
 //分配显存+缓存池（避免重复申请）
 void* GPUDeviceController::mem_alloc(size_t byte_size) {
@@ -154,7 +154,7 @@ void* GPUDeviceController::mem_alloc(size_t byte_size) {
         //需要分配大块内存
 
         //获取该设备上的大块内存的空闲表
-        auto* big_block_list = big_block_map[id];
+        auto& big_block_list = big_block_map[id];
 
         int sel_id = -1;
         for(int i =0; i<big_block_list.size(); i++){
@@ -163,7 +163,7 @@ void* GPUDeviceController::mem_alloc(size_t byte_size) {
                 !big_block_list[i].busy &&
                 big_block_list[i].byte_size - byte_size < THRESHOLD){
                     if(sel_id == -1 ||
-                        big_block_list[sel_id].byte_size > big_block_list[sel_id].byte_size){
+                        big_block_list[sel_id].byte_size > big_block_list[i].byte_size){
                         //这个第i个block更小且更贴合
                         sel_id = i;
                     }
@@ -217,18 +217,18 @@ void GPUDeviceController::mem_release(void* ptr) {
         if(idle_mini_block_size_cnt[it.first] > THRESHOLD*1024){
             auto& mini_buffer_list = it.second;//这台设备的所有小块缓存
             std::vector<CudaMemoryBlock> temp;
-            for(int i=0; i< mini_buffer_list.size(); i++){
-                if(!mini_block_list[i].busy){
+            for(int i = 0; i < mini_buffer_list.size(); i++){
+                if(!mini_buffer_list[i].busy){
                     //释放掉不忙的
                     state = cudaSetDevice(it.first);
-                    state = cudaFree(mini_buffer_list[i].data);
+                    state = cudaFree(mini_buffer_list[i].ptr);
                     CHECK(state == cudaSuccess);
                 } else{
                     //重新保存忙的
-                    temp.push_back(mini_block_list[i]);
+                    temp.push_back(mini_buffer_list[i]);
                 }
             }
-            mini_block_list.clear();//清除旧缓存
+            mini_buffer_list.clear();//清除旧缓存
             it.second = temp; //替换新缓存
             idle_mini_block_size_cnt[it.first] = 0;//重置
         }
@@ -236,16 +236,16 @@ void GPUDeviceController::mem_release(void* ptr) {
 
     for(auto& it: mini_block_map){
         auto& mini_block_list = it.second;
-        for(int i =0; i< mini_block_list.size(); i++){
+        for(int i = 0; i < mini_block_list.size(); i++){
             if(mini_block_list[i].ptr == ptr){
                 idle_mini_block_size_cnt[it.first] += mini_block_list[i].byte_size;
-                mini_blcok_list[i].busy = false;
+                mini_block_list[i].busy = false;
                 return;
             }
         }
 
-        auto* big_block_list = big_block_map[it.first];
-        for(int i = 0; i< big_block_list.size(); i++){
+        auto& big_block_list = big_block_map[it.first];
+        for(int i = 0; i < big_block_list.size(); i++){
             if(big_block_list[i].ptr == ptr){
                 big_block_list[i].busy = false;
                 return;
@@ -256,34 +256,28 @@ void GPUDeviceController::mem_release(void* ptr) {
 
     state = cudaFree(ptr);
     CHECK(state == cudaSuccess);
-
-
-
 }
 
 // ---- CPUDeviceControllerFactory ----
 
-std::shared_ptr<CPUDeviceController> CPUDeviceControllerFactory::controller = nullptr;
+std::shared_ptr<CPUDeviceController> CPUDeviceControllerFactory::instance = nullptr;
 
 std::shared_ptr<CPUDeviceController> CPUDeviceControllerFactory::get_instance() {
-    if (controller == nullptr) {
-        controller = std::make_shared<CPUDeviceController>();
+    if (instance == nullptr) {
+        instance = std::make_shared<CPUDeviceController>();
     }
-    return controller;
+    return instance;
 }
 
 // ---- GPUDeviceControllerFactory ----
 
-std::shared_ptr<GPUDeviceController> GPUDeviceControllerFactory::controller = nullptr;
+std::shared_ptr<GPUDeviceController> GPUDeviceControllerFactory::instance = nullptr;
 
 std::shared_ptr<GPUDeviceController> GPUDeviceControllerFactory::get_instance() {
-    if (controller == nullptr) {
-        controller = std::make_shared<GPUDeviceController>();
+    if (instance == nullptr) {
+        instance = std::make_shared<GPUDeviceController>();
     }
-    return controller;
+    return instance;
 }
 
-//类外的静态成员变量赋初值
-std::shared_ptr<CPUDeviceController> CPUDeviceControllerFactory::instance = nullptr;
-std::shared_ptr<GPUDeviceController> GPUDeviceControllerFactory::instance = nullptr;
 } // namespace base
