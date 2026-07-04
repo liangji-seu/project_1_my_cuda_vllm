@@ -177,6 +177,15 @@ TEST(Tensor, get_ptr_offset) {
     EXPECT_EQ(*p4, 40);
 }
 
+TEST(Tensor, get_buffer) {
+    auto cpu_controller = base::CPUDeviceControllerFactory::get_instance();
+    tensor::Tensor t(tensor::DataType_t::fp32, {2}, true, cpu_controller, nullptr);
+
+    auto buf = t.get_buffer();
+    EXPECT_NE(buf, nullptr);
+    EXPECT_EQ(buf->get_byte_size(), 8); // 2 * sizeof(float)
+}
+
 // ============================================================
 // 操作方法测试
 // ============================================================
@@ -224,6 +233,28 @@ TEST(Tensor, reshape_larger) {
     // 原有数据应该被拷贝过来
     EXPECT_FLOAT_EQ(static_cast<float*>(t.get_ptr())[0], 0.0f);
     EXPECT_FLOAT_EQ(static_cast<float*>(t.get_ptr())[5], 5.0f);
+}
+
+TEST(Tensor, reshape_smaller) {
+    auto cpu_controller = base::CPUDeviceControllerFactory::get_instance();
+    tensor::Tensor t(tensor::DataType_t::fp32, {2, 3}, true, cpu_controller, nullptr);
+
+    // 写入数据
+    float* data = static_cast<float*>(t.get_ptr());
+    for (size_t i = 0; i < 6; ++i) {
+        data[i] = static_cast<float>(i);
+    }
+
+    // reshape 到更小元素个数，不重新分配
+    t.reshape({3, 1});
+
+    EXPECT_EQ(t.get_dims_size(), 2);
+    EXPECT_EQ(t.get_dim(0), 3);
+    EXPECT_EQ(t.get_dim(1), 1);
+    EXPECT_EQ(t.get_size(), 3);
+    // 原有数据应该还在
+    EXPECT_FLOAT_EQ(static_cast<float*>(t.get_ptr())[0], 0.0f);
+    EXPECT_FLOAT_EQ(static_cast<float*>(t.get_ptr())[2], 2.0f);
 }
 
 TEST(Tensor, reshape_empty_buffer) {
@@ -340,6 +371,75 @@ TEST(Tensor, clone_empty_tensor) {
     EXPECT_EQ(t2.get_data_type(), tensor::DataType_t::fp32);
     EXPECT_EQ(t2.get_size(), t.get_size());
     EXPECT_NE(t2.get_ptr(), t.get_ptr());
+}
+
+// ============================================================
+// peek_index / peek_position 访问元素测试
+// ============================================================
+
+TEST(Tensor, peek_index_read) {
+    auto cpu_controller = base::CPUDeviceControllerFactory::get_instance();
+    tensor::Tensor t(tensor::DataType_t::int32, {5}, true, cpu_controller, nullptr);
+
+    int32_t* data = static_cast<int32_t*>(t.get_ptr());
+    for (int32_t i = 0; i < 5; ++i) {
+        data[i] = i * 10;
+    }
+
+    EXPECT_EQ(t.peek_index<int32_t>(0), 0);
+    EXPECT_EQ(t.peek_index<int32_t>(2), 20);
+    EXPECT_EQ(t.peek_index<int32_t>(4), 40);
+}
+
+TEST(Tensor, peek_index_write) {
+    auto cpu_controller = base::CPUDeviceControllerFactory::get_instance();
+    tensor::Tensor t(tensor::DataType_t::fp32, {3}, true, cpu_controller, nullptr);
+
+    t.peek_index<float>(0) = 1.5f;
+    t.peek_index<float>(1) = 2.5f;
+    t.peek_index<float>(2) = 3.5f;
+
+    float* data = static_cast<float*>(t.get_ptr());
+    EXPECT_FLOAT_EQ(data[0], 1.5f);
+    EXPECT_FLOAT_EQ(data[1], 2.5f);
+    EXPECT_FLOAT_EQ(data[2], 3.5f);
+}
+
+TEST(Tensor, peek_position_read) {
+    auto cpu_controller = base::CPUDeviceControllerFactory::get_instance();
+    tensor::Tensor t(tensor::DataType_t::fp32, {2, 3, 4}, true, cpu_controller, nullptr);
+
+    // strides: [12, 4, 1]
+    // offset = row*12 + col*4 + ch*1
+    float* data = static_cast<float*>(t.get_ptr());
+    for (size_t i = 0; i < 24; ++i) {
+        data[i] = static_cast<float>(i);
+    }
+
+    // pos {0, 0, 0} -> offset 0
+    EXPECT_FLOAT_EQ(t.peek_position<float>({0, 0, 0}), 0.0f);
+    // pos {0, 0, 3} -> offset 3
+    EXPECT_FLOAT_EQ(t.peek_position<float>({0, 0, 3}), 3.0f);
+    // pos {0, 1, 0} -> offset 4
+    EXPECT_FLOAT_EQ(t.peek_position<float>({0, 1, 0}), 4.0f);
+    // pos {1, 0, 0} -> offset 12
+    EXPECT_FLOAT_EQ(t.peek_position<float>({1, 0, 0}), 12.0f);
+    // pos {1, 2, 3} -> offset 12 + 8 + 3 = 23
+    EXPECT_FLOAT_EQ(t.peek_position<float>({1, 2, 3}), 23.0f);
+}
+
+TEST(Tensor, peek_position_write) {
+    auto cpu_controller = base::CPUDeviceControllerFactory::get_instance();
+    tensor::Tensor t(tensor::DataType_t::int32, {2, 3}, true, cpu_controller, nullptr);
+
+    // strides: [3, 1]
+    // pos {0, 2} -> offset 2, pos {1, 1} -> offset 4
+    t.peek_position<int32_t>({0, 2}) = 100;
+    t.peek_position<int32_t>({1, 1}) = 200;
+
+    int32_t* data = static_cast<int32_t*>(t.get_ptr());
+    EXPECT_EQ(data[2], 100);   // offset 2
+    EXPECT_EQ(data[4], 200);   // offset 4
 }
 
 // ============================================================
