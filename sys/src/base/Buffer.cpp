@@ -4,7 +4,7 @@ namespace base {
 
 //buffer创建对象，默认必须是内部自行申请内存。且立刻当场分配
 Buffer::Buffer(size_t byte_size,
-    void* ptr,
+               void* ptr,
                
                DeviceType_t buffer_device_type,
                std::shared_ptr<DeviceController> controller,

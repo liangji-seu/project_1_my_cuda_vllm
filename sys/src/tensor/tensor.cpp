@@ -247,6 +247,17 @@ namespace tensor{
         return this->buffer->get_device_type();
     }
 
+    void* Tensor::get_ptr() {
+        CHECK(this->buffer != nullptr);
+        return this->buffer->get_ptr();
+    }
+
+    void* Tensor::get_ptr_offset(size_t offset) {
+        CHECK(this->buffer != nullptr);
+        size_t type_size = DataTypeSize(data_type);
+        return static_cast<char*>(this->buffer->get_ptr()) + offset * type_size;
+    }
+
 
 
 

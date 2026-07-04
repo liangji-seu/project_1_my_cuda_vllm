@@ -1,4 +1,4 @@
-add_executable(test_main test_main.cpp test_device_controller.cpp test_buffer.cpp)
+add_executable(test_main test_main.cpp test_device_controller.cpp test_buffer.cpp test_tensor.cpp)
 
 target_link_libraries(test_main
     my_cuda_vllm
