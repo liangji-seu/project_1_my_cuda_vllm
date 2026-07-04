@@ -1,8 +1,8 @@
 #include "tensor/tensor.h"
-#include <cstring>
+#include <cstring>//memcpy, memset这些操作
 #include <glog/logging.h>
-#include <algorithm>
-#include <numeric>
+#include <algorithm>//std::remove_if
+#include <numeric>//std::accumulate
 
 namespace tensor{
 
