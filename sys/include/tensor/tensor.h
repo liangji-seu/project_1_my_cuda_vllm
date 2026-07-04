@@ -87,6 +87,11 @@ namespace tensor{
             bool self_allocate(std::shared_ptr<base::DeviceController> allocator,bool need_realloc = false);//需要自行分配内存，执行分配动作
             void init_buffer(std::shared_ptr<base::DeviceController> allocator, DataType_t data_type,void* ptr);    //直接指定现成的内存
                 
+        public:
+            //补充其他张量层的方法：
+            void unsqueeze(size_t axis);
+            void squeeze(size_t axis = -1);//移除所有轴（-1），指定轴，大小为1的维度
+            Tensor slice(size_t axis, size_t start, size_t end, size_t step);
 
 
     };
@@ -109,5 +114,8 @@ namespace tensor{
         }
         return peek_index<T>(offset);
     }
+
+
+
 
 }

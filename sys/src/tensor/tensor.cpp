@@ -1,5 +1,7 @@
 #include "tensor/tensor.h"
+#include <cstring>
 #include <glog/logging.h>
+#include <algorithm>
 #include <numeric>
 
 namespace tensor{
@@ -265,7 +267,86 @@ namespace tensor{
     }
 
 
+    //补充其他张量层的方法：
+    void Tensor::unsqueeze(size_t axis){
+        CHECK(axis >= 0);
+        CHECK(axis < this->dims.size());
+        this->dims.insert(this->dims.begin() + axis, 1);
+    }
 
+    void Tensor::squeeze(size_t axis){
+        if(axis == -1){
+            // 删除所有大小为1的维度
+            this->dims.erase(
+                std::remove_if(this->dims.begin(), this->dims.end(),
+                               [](size_t d) { return d == 1; }),
+                this->dims.end());
+        } else {
+            CHECK(axis >= 0 && axis < this->dims.size());
+            CHECK_EQ(this->dims[axis], 1) << "The dimension to squeeze must be 1";
+            this->dims.erase(this->dims.begin() + axis);
+        }
+        // 元素总数不变，size 不需要更新
+    }
+
+
+    Tensor Tensor::slice(size_t axis, size_t start, size_t end, size_t step){
+        CHECK(axis < this->dims.size());
+        CHECK(step > 0);
+        auto num = this->dims[axis];
+        CHECK(start < num && end <= num && start < end);
+
+        // 切片轴的新维度
+        size_t new_dim = (end - start + step - 1) / step;
+
+        // 计算 inner_size: axis 之后所有维度的乘积（字节数）
+        auto dims_after = std::vector<size_t>(this->dims.begin() + axis + 1, this->dims.end());
+        size_t inner_elements = dims_after.empty() ? 1 : reduce_dimension(dims_after.begin(), dims_after.end(), size_t(1));
+        size_t element_size = DataTypeSize(data_type);
+        size_t inner_bytes = inner_elements * element_size;
+
+        // 计算 outer_count: axis 之前所有维度的乘积
+        size_t outer_count = 1;
+        for (size_t i = 0; i < axis; ++i) {
+            outer_count *= this->dims[i];
+        }
+
+        // 旧 axis 跨度（字节）：num * inner_bytes
+        size_t old_axis_byte_stride = num * inner_bytes;
+
+        // 新 axis 跨度（字节）：new_dim * inner_bytes
+        size_t new_axis_byte_stride = new_dim * inner_bytes;
+
+        // 构建新 dims
+        auto new_dims = this->dims;
+        new_dims[axis] = new_dim;
+
+        // 分配新 buffer
+        size_t new_byte_size = outer_count * new_axis_byte_stride;
+        auto allocator = this->buffer->get_controller();
+        auto new_buffer = std::make_shared<base::Buffer>(
+            new_byte_size, nullptr, base::DeviceType_t::Unknown, allocator, false);
+
+        // 逐行拷贝
+        auto* src_base = static_cast<unsigned char*>(this->buffer->get_ptr());
+        auto* dst_base = static_cast<unsigned char*>(new_buffer->get_ptr());
+
+        for (size_t outer = 0; outer < outer_count; ++outer) {
+            size_t slice_idx = 0;
+            for (size_t s = start; s < end; s += step) {
+                auto* src = src_base + outer * old_axis_byte_stride + s * inner_bytes;
+                auto* dst = dst_base + outer * new_axis_byte_stride + slice_idx * inner_bytes;
+                std::memcpy(dst, src, inner_bytes);
+                ++slice_idx;
+            }
+        }
+
+        // 构建返回的 Tensor
+        Tensor result(this->data_type, new_dims, false, allocator, nullptr);
+        result.buffer = new_buffer;
+        result.size = outer_count * new_dim * inner_elements;
+        return result;
+    }
 
 
 
