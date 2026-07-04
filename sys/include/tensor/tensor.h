@@ -70,7 +70,7 @@ namespace tensor{
 
             //坐标访问张量内存元素
             template<typename T>
-            T& peek_position(std::vector<size_t> dims);
+            T& peek_position(std::vector<size_t> pos);
 
 
             /**
@@ -90,5 +90,24 @@ namespace tensor{
 
 
     };
+
+    template<typename T>
+    T& Tensor::peek_index(size_t offset){
+        auto start = static_cast<T*>(this->buffer->get_ptr()) + offset;
+        return *start;
+    }
+
+    
+    //坐标访问张量内存元素
+    template<typename T>
+    T& Tensor::peek_position(std::vector<size_t> pos){
+        size_t offset = 0;
+
+        const auto& strides = get_strides();
+        for(size_t i = 0; i< pos.size(); i++){
+            offset +=pos[i]*strides[i];
+        }
+        return peek_index<T>(offset);
+    }
 
 }

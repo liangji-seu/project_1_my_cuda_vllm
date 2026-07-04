@@ -187,6 +187,9 @@ namespace tensor{
 
     }
 
+
+    
+
 /**
  * 查询方法实现
  */
@@ -260,6 +263,9 @@ namespace tensor{
         size_t type_size = DataTypeSize(data_type);
         return static_cast<char*>(this->buffer->get_ptr()) + offset * type_size;
     }
+
+
+
 
 
 
