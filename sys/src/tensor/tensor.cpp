@@ -331,13 +331,13 @@ namespace tensor{
         auto* src_base = static_cast<unsigned char*>(this->buffer->get_ptr());
         auto* dst_base = static_cast<unsigned char*>(new_buffer->get_ptr());
 
-        for (size_t outer = 0; outer < outer_count; ++outer) {
+        for (size_t outer = 0; outer < outer_count; outer++) {
             size_t slice_idx = 0;
             for (size_t s = start; s < end; s += step) {
                 auto* src = src_base + outer * old_axis_byte_stride + s * inner_bytes;
                 auto* dst = dst_base + outer * new_axis_byte_stride + slice_idx * inner_bytes;
                 std::memcpy(dst, src, inner_bytes);
-                ++slice_idx;
+                slice_idx++;
             }
         }
 
