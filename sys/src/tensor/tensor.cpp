@@ -4,6 +4,15 @@
 
 namespace tensor{
 
+    //降维累乘
+    template <typename T, typename Tp>
+    static size_t reduce_dimension(T begin, T end, Tp init) {
+        if (begin >= end) {
+            return 0;
+        }
+        size_t size = std::accumulate(begin, end, init, std::multiplies<>());
+        return size;
+    }
 
     Tensor::Tensor(DataType_t data_type, 
                     std::vector<size_t> dims,
@@ -13,6 +22,8 @@ namespace tensor{
                     void* ptr):
             dims(std::move(dims)), data_type(data_type){
      
+        //计算元素个数
+        this->size = reduce_dimension(this->dims.begin(), this->dims.end(), size_t(1));
         if(need_alloc && controller){
             //需要自己分配, 且已经指定控制器
             self_allocate(controller); 
@@ -23,15 +34,7 @@ namespace tensor{
     }
 
 
-        //降维累乘
-    template <typename T, typename Tp>
-    static size_t reduce_dimension(T begin, T end, Tp init) {
-        if (begin >= end) {
-            return 0;
-        }
-        size_t size = std::accumulate(begin, end, init, std::multiplies<>());
-        return size;
-    }
+
 
 
     //转移函数
