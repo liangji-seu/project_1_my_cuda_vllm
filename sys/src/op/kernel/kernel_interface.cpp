@@ -1,7 +1,10 @@
 #include "kernel_interface.h"
 #include "glog/logging.h"
-#include "kernel/cpu/add_kernel.h"
+#include "cpu/add_kernel.h"
+#include "gpu/add_kernel.cuh"
 
+
+namespace kernel{
 
 //全连接层
 //分词器层
@@ -16,10 +19,14 @@ Add_backend get_add_interface(base::DeviceType_t device_type){
     if(device_type == base::DeviceType_t::CPU){
         //返回cpu后端
         return add_kernel_cpu;
-    } else if(device_type == base::DeviceType_t::GPU)
+    } else if(device_type == base::DeviceType_t::GPU){
         //返回GPU后端
+        return add_kernel_cuda;
     } else {
         LOG(ERROR)<<"error device type";
+        return nullptr;
     }
 }
 //SwiGLU 激活函数
+
+} // namespace kernel

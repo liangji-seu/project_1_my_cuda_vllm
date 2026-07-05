@@ -99,7 +99,7 @@ namespace op{
 
 
             //检查张量
-            virtual base::error::Status check_layer() const = 0;//检查输入张量们，输出张量们
+            virtual base::error::Status check_layer() = 0;//检查输入张量们，输出张量们
             
 
             //获取张量
@@ -141,7 +141,7 @@ namespace op{
 
             
             //自检
-            base::error::Status check_layer() const override;
+            base::error::Status check_layer() override;
 
 
             //前向传播
@@ -177,7 +177,7 @@ namespace op{
             //设置张量(无权重)
             void set_input_tensor(size_t index, const tensor::Tensor& input) override;
             void set_output_tensor(int32_t index, const tensor::Tensor& output) override;
-            //base::error::Status set_weight_tensor(size_t index, const tensor::Tensor& weight) override;
+            base::error::Status set_weight_tensor(size_t index, const tensor::Tensor& weight) override;
 
             //检查张量
             base::error::Status check_tensor(const tensor::Tensor& tensor, bool is_input = true) const;

@@ -62,6 +62,7 @@ namespace tensor{
             base::DeviceType_t get_device_type() const;
 
             void* get_ptr(); //获取底层的内存指针
+            const void* get_ptr() const; //const版本
             void* get_ptr_offset(size_t offset); 
 
             //一维索引访问张量内存元素

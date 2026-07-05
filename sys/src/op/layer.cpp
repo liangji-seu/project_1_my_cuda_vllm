@@ -78,7 +78,7 @@ namespace op{
         return base::error::Status();
     }
 
-    base::error::Status Layer::check_layer() const{
+    base::error::Status Layer::check_layer() {
         //自检查
         //TODO 
         return base::error::Status();
@@ -96,6 +96,11 @@ namespace op{
         CHECK(index >=0 && index < outputs.size());
         this->outputs[index] = output;
         return;
+    }
+
+    base::error::Status Layer::set_weight_tensor(size_t index, const tensor::Tensor& weight){
+        //无权重的层，空实现
+        return base::error::Status();
     }
 
     base::error::Status Layer::check_tensor(const tensor::Tensor& tensor, bool is_input) const {

@@ -8,10 +8,10 @@ namespace kernel{
     void add_kernel_cpu(
         const tensor::Tensor& x1,
         const tensor::Tensor& x2,
-        const tensor::Tensor& y,
+        tensor::Tensor& y,
         void* stream
     ){
-        UNUSED(stream);//stream在cpu上没有用
+        (void)stream;//stream在cpu上没有用
         CHECK(x1.is_empty() == false);
         CHECK(x2.is_empty() == false);
         CHECK(y.is_empty() == false);

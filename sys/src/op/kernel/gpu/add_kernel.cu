@@ -7,10 +7,10 @@ namespace kernel{
 
     //一个thread，负责一个元素的计算，朴素实现
     __global__ void add_kernel_cuda_fp32(
-        size_t size, 
+        size_t size,
         const float* in1,
         const float* in2,
-        const float* out
+        float* out
     ){
         //每个thread的全局id
         int32_t tid = blockDim.x*blockIdx.x + threadIdx.x;
@@ -31,7 +31,7 @@ namespace kernel{
     void add_kernel_cuda(
         const tensor::Tensor& x1,
         const tensor::Tensor& x2,
-        const tensor::Tensor& y,
+        tensor::Tensor& y,
         void* stream
     ){
         //先校验
@@ -55,16 +55,16 @@ namespace kernel{
 
             add_kernel_cuda_fp32<<<grid_size, block_size, 0,_stream>>>(
                 size,
-                static_cast<cosnt float*>(x1.get_ptr()),
-                static_cast<cosnt float*>(x2.get_ptr()),
-                static_cast<cosnt float*>(y.get_ptr())
+                static_cast<const float*>(x1.get_ptr()),
+                static_cast<const float*>(x2.get_ptr()),
+                static_cast<float*>(y.get_ptr())
             );
         } else{
             add_kernel_cuda_fp32<<<grid_size, block_size>>>(
                 size,
-                static_cast<cosnt float*>(x1.get_ptr()),
-                static_cast<cosnt float*>(x2.get_ptr()),
-                static_cast<cosnt float*>(y.get_ptr())
+                static_cast<const float*>(x1.get_ptr()),
+                static_cast<const float*>(x2.get_ptr()),
+                static_cast<float*>(y.get_ptr())
             );
             
         }

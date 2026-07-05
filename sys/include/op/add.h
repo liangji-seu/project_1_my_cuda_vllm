@@ -13,7 +13,7 @@ namespace op{
             );
 
             //自检
-            base::error::Status check_layer() const override;
+            base::error::Status check_layer() override;
 
             //重定向该算子的后端接口获取
             base::error::Status forward() override;

@@ -23,11 +23,14 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/lib)
 aux_source_directory(sys/src/base DIR_BASE)
 aux_source_directory(sys/src/tensor DIR_TENSOR)
 aux_source_directory(sys/src/op DIR_OP)
+aux_source_directory(sys/src/op/kernel DIR_OP_KERNEL)
+aux_source_directory(sys/src/op/kernel/cpu DIR_OP_KERNEL_CPU)
+aux_source_directory(sys/src/op/kernel/gpu DIR_OP_KERNEL_GPU)
 aux_source_directory(sys/src/model DIR_MODEL)
 aux_source_directory(sys/src/sampler DIR_SAMPLER)
 
 add_library(my_cuda_vllm SHARED
-  ${DIR_BASE} ${DIR_TENSOR} ${DIR_OP} ${DIR_MODEL} ${DIR_SAMPLER}
+  ${DIR_BASE} ${DIR_TENSOR} ${DIR_OP} ${DIR_OP_KERNEL} ${DIR_OP_KERNEL_CPU} ${DIR_OP_KERNEL_GPU} ${DIR_MODEL} ${DIR_SAMPLER}
 )
 
 target_link_libraries(my_cuda_vllm

@@ -2,6 +2,7 @@
 
 #include "base/cuda_stream.h"
 #include "base/base.h"
+#include "tensor/tensor.h"
 
 
 
@@ -110,7 +111,7 @@ typedef void (Softmax_backend)(
 typedef void (*Add_backend)(
     const tensor::Tensor& x1,
     const tensor::Tensor& x2,
-    const tensor::Tensor& y,
+    tensor::Tensor& y,
     void* stream
 );
 
