@@ -1,3 +1,6 @@
+#include <chrono>
+#include <iostream>
+
 #include <glog/logging.h>
 #include <gtest/gtest.h>
 
@@ -82,8 +85,12 @@ TEST(VecAddLayer, forward_cpu_small) {
     layer.set_input_tensor(1, in2);
     layer.set_output_tensor(0, out);
 
+    auto start = std::chrono::high_resolution_clock::now();
     auto status = layer.forward();
+    auto end = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
     EXPECT_EQ(status, base::error::kSuccess);
+    std::cout << "  forward_cpu_small (4 elem): " << duration.count() << " us" << std::endl;
 
     float* out_data = static_cast<float*>(out.get_ptr());
     EXPECT_FLOAT_EQ(out_data[0], 1.0f);   // 1 + 0
@@ -115,8 +122,12 @@ TEST(VecAddLayer, forward_cpu_large) {
     layer.set_input_tensor(1, in2);
     layer.set_output_tensor(0, out);
 
+    auto start = std::chrono::high_resolution_clock::now();
     auto status = layer.forward();
+    auto end = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
     EXPECT_EQ(status, base::error::kSuccess);
+    std::cout << "  forward_cpu_large (1024 elem): " << duration.count() << " us" << std::endl;
 
     float* out_data = static_cast<float*>(out.get_ptr());
     for (size_t i = 0; i < N; i++) {
@@ -146,8 +157,12 @@ TEST(VecAddLayer, forward_cpu_multi_dim) {
     layer.set_input_tensor(1, in2);
     layer.set_output_tensor(0, out);
 
+    auto start = std::chrono::high_resolution_clock::now();
     auto status = layer.forward();
+    auto end = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
     EXPECT_EQ(status, base::error::kSuccess);
+    std::cout << "  forward_cpu_multi_dim (6 elem): " << duration.count() << " us" << std::endl;
 
     float* out_data = static_cast<float*>(out.get_ptr());
     for (size_t i = 0; i < 6; i++) {
@@ -175,8 +190,12 @@ TEST(VecAddLayer, forward_cpu_negative_values) {
     layer.set_input_tensor(1, in2);
     layer.set_output_tensor(0, out);
 
+    auto start = std::chrono::high_resolution_clock::now();
     auto status = layer.forward();
+    auto end = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
     EXPECT_EQ(status, base::error::kSuccess);
+    std::cout << "  forward_cpu_negative (3 elem): " << duration.count() << " us" << std::endl;
 
     float* out_data = static_cast<float*>(out.get_ptr());
     EXPECT_FLOAT_EQ(out_data[0], 2.0f);
