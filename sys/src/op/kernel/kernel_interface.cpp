@@ -1,5 +1,6 @@
 #include "kernel_interface.h"
 #include "glog/logging.h"
+#include "kernel/cpu/add_kernel.h"
 
 
 //全连接层
@@ -14,6 +15,7 @@
 Add_backend get_add_interface(base::DeviceType_t device_type){
     if(device_type == base::DeviceType_t::CPU){
         //返回cpu后端
+        return add_kernel_cpu;
     } else if(device_type == base::DeviceType_t::GPU)
         //返回GPU后端
     } else {

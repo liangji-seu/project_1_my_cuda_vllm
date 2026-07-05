@@ -98,8 +98,9 @@ namespace op{
         return;
     }
 
-    base::error::Status Layer::check_tensor(const tensor::Tensor& tensor) const {
-        CHECK(!tensor.is_empty());
+    base::error::Status Layer::check_tensor(const tensor::Tensor& tensor, bool is_input) const {
+        if(is_input)
+            CHECK(!tensor.is_empty());
         CHECK(this->get_data_type() == tensor.get_data_type());
         CHECK(this->get_device_type() == tensor.get_device_type());
         return base::error::Status();

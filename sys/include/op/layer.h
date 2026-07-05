@@ -180,7 +180,7 @@ namespace op{
             //base::error::Status set_weight_tensor(size_t index, const tensor::Tensor& weight) override;
 
             //检查张量
-            base::error::Status check_tensor(const tensor::Tensor& tensor) const;
+            base::error::Status check_tensor(const tensor::Tensor& tensor, bool is_input = true) const;
 
             //获取张量（无权重）
             tensor::Tensor& get_input(size_t index) override;
