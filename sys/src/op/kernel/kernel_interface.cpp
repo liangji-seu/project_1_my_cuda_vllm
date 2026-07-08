@@ -3,10 +3,12 @@
 #include "cpu/add_kernel.h"
 #include "cpu/emb_kernel.h"
 #include "cpu/rmsnorm_kernel.h"
+#include "cpu/matmul_kernel.h"
 #include "cpu/mha_kernel.h"
 #include "gpu/add_kernel.cuh"
 #include "gpu/emb_kernel.cuh"
 #include "gpu/rmsnorm_kernel.cuh"
+#include "gpu/matmul_kernel.cuh"
 #include "gpu/mha_kernel.cuh"
 
 
@@ -42,6 +44,18 @@ RMSNorm_backend get_rmsnorm_interface(base::DeviceType_t device_type){
         return rmsnorm_kernel_cpu;
     } else if(device_type == base::DeviceType_t::GPU){
         return rmsnorm_kernel_cuda;
+    } else {
+        LOG(ERROR)<<"error device type";
+        return nullptr;
+    }
+}
+
+//矩阵乘层
+Matmul_backend get_matmul_interface(base::DeviceType_t device_type){
+    if(device_type == base::DeviceType_t::CPU){
+        return matmul_kernel_cpu;
+    } else if(device_type == base::DeviceType_t::GPU){
+        return matmul_kernel_cuda;
     } else {
         LOG(ERROR)<<"error device type";
         return nullptr;

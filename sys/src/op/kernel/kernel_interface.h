@@ -95,6 +95,8 @@ typedef void (*Matmul_backend)(
     void* stream
 );
 
+Matmul_backend get_matmul_interface(base::DeviceType_t device_type);
+
 
 //旋转位置编码， RoPE
 typedef void (*RoPE_backend)(
