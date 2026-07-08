@@ -12,10 +12,42 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_STANDARD 14)
 
+option(LLAMA3_SUPPORT "Enable Llama3 BPE tokenizer support" ON)
+if (LLAMA3_SUPPORT)
+  add_definitions(-DLLAMA3_SUPPORT)
+endif()
+
 # ---- Dependencies ----
 find_package(GTest REQUIRED)
 find_package(glog REQUIRED)
 find_package(Armadillo REQUIRED)
+
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+include(FetchContent)
+
+FetchContent_Declare(
+  absl
+  GIT_REPOSITORY https://github.com/abseil/abseil-cpp.git
+  GIT_TAG 20240722.0
+)
+set(ABSL_PROPAGATE_CXX_STD ON CACHE BOOL "" FORCE)
+set(ABSL_ENABLE_INSTALL ON CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(absl)
+
+FetchContent_Declare(
+  re2
+  GIT_REPOSITORY https://github.com/google/re2.git
+  GIT_TAG 2024-07-02
+)
+FetchContent_MakeAvailable(re2)
+
+FetchContent_Declare(
+  nlohmann_json
+  GIT_REPOSITORY https://github.com/nlohmann/json.git
+  GIT_TAG v3.11.3
+)
+FetchContent_MakeAvailable(nlohmann_json)
 
 # ---- Library target ----
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/lib)
@@ -35,6 +67,7 @@ add_library(my_cuda_vllm SHARED
 
 target_link_libraries(my_cuda_vllm
   glog::glog GTest::gtest GTest::gtest_main pthread cudart armadillo
+  absl::strings re2::re2 nlohmann_json::nlohmann_json
 )
 
 target_link_directories(my_cuda_vllm PUBLIC ${CMAKE_CUDA_COMPILER_LIBRARY_ROOT}/lib64)
