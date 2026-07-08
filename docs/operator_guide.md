@@ -26,8 +26,8 @@ BaseLayer
 
 | 条件 | 继承 | 示例 |
 |------|------|------|
-| 无权重，纯计算 | `Layer` | Add, MHA, Softmax |
-| 有权重（可学习参数） | `LayerParam` | Embedding, RMSNorm, Linear, SwiGLU |
+| 无权重，纯计算 | `Layer` | Add, MHA, Softmax, RoPE, SwiGLU |
+| 有权重（可学习参数） | `LayerParam` | Embedding, RMSNorm, Matmul |
 
 ## 已实现的算子
 
@@ -124,6 +124,97 @@ BaseLayer
 | 前端 | [sys/src/op/mha.cpp](../sys/src/op/mha.cpp) |
 | CPU后端 | [sys/src/op/kernel/cpu/mha_kernel.h](../sys/src/op/kernel/cpu/mha_kernel.h) / [mha_kernel.cpp](../sys/src/op/kernel/cpu/mha_kernel.cpp) |
 | GPU后端 | [sys/src/op/kernel/gpu/mha_kernel.cuh](../sys/src/op/kernel/gpu/mha_kernel.cuh) / [mha_kernel.cu](../sys/src/op/kernel/gpu/mha_kernel.cu) |
+
+---
+
+### Matmul (有权重 → LayerParam)
+
+矩阵乘法，Transformer 的核心计算单元。Q/K/V 投影、FFN 上下投影都靠它。
+
+```
+输入: 1个 — x [in_dim0] 或 [in_dim0, in_dim1]
+权重: 2个 — W [out_dim, in_dim0], bias (预留)
+输出: 1个 — y = x * W^T * scale
+```
+
+| 文件 | 路径 |
+|------|------|
+| 头文件 | [sys/include/op/matmul.h](../sys/include/op/matmul.h) |
+| 前端 | [sys/src/op/matmul.cpp](../sys/src/op/matmul.cpp) |
+| CPU后端 | [sys/src/op/kernel/cpu/matmul_kernel.h](../sys/src/op/kernel/cpu/matmul_kernel.h) / [matmul_kernel.cpp](../sys/src/op/kernel/cpu/matmul_kernel.cpp) |
+| GPU后端 | [sys/src/op/kernel/gpu/matmul_kernel.cuh](../sys/src/op/kernel/gpu/matmul_kernel.cuh) / [matmul_kernel.cu](../sys/src/op/kernel/gpu/matmul_kernel.cu) |
+
+---
+
+### RoPE (无权重 → Layer)
+
+旋转位置编码。对 Q 和 K 的相邻维度对进行旋转，注入位置信息。
+
+```
+输入: 5个
+  - input(0): Q tensor [dim]
+  - input(1): K tensor [dim]
+  - input(2): position scalar (int32)
+  - input(3): sin_cache [max_seq_len, head_size]
+  - input(4): cos_cache [max_seq_len, head_size]
+输出: 1个 (预留，Q/K在输入上原地修改)
+
+参数:
+  - dim: Q 的总维度 = head_num * head_size
+  - kv_dim: K/V 的总维度 = (head_num/kv_mul) * head_size
+  - head_size: 每个头的维度
+
+公式:
+  Q[i, i+1] = Q[i, i+1] * [cos, -sin; sin, cos]
+  K[i, i+1] = K[i, i+1] * [cos, -sin; sin, cos]  (仅当 i < kv_dim)
+```
+
+| 文件 | 路径 |
+|------|------|
+| 头文件 | [sys/include/op/rope.h](../sys/include/op/rope.h) |
+| 前端 | [sys/src/op/rope.cpp](../sys/src/op/rope.cpp) |
+| CPU后端 | [sys/src/op/kernel/cpu/rope_kernel.h](../sys/src/op/kernel/cpu/rope_kernel.h) / [rope_kernel.cpp](../sys/src/op/kernel/cpu/rope_kernel.cpp) |
+| GPU后端 | [sys/src/op/kernel/gpu/rope_kernel.cuh](../sys/src/op/kernel/gpu/rope_kernel.cuh) / [rope_kernel.cu](../sys/src/op/kernel/gpu/rope_kernel.cu) |
+
+---
+
+### Softmax (无权重 → Layer)
+
+注意力分数归一化。原地操作，对输入 tensor 做 softmax 变换。
+
+```
+输入: 1个 — 待归一化向量
+输出: 1个 — softmax 结果
+公式: y[i] = exp(x[i] - max) / sum(exp(x[j] - max))
+```
+
+| 文件 | 路径 |
+|------|------|
+| 头文件 | [sys/include/op/softmax.h](../sys/include/op/softmax.h) |
+| 前端 | [sys/src/op/softmax.cpp](../sys/src/op/softmax.cpp) |
+| CPU后端 | [sys/src/op/kernel/cpu/softmax_kernel.h](../sys/src/op/kernel/cpu/softmax_kernel.h) / [softmax_kernel.cpp](../sys/src/op/kernel/cpu/softmax_kernel.cpp) |
+| GPU后端 | [sys/src/op/kernel/gpu/softmax_kernel.cuh](../sys/src/op/kernel/gpu/softmax_kernel.cuh) / [softmax_kernel.cu](../sys/src/op/kernel/gpu/softmax_kernel.cu) |
+
+---
+
+### SwiGLU (无权重 → Layer)
+
+Llama FFN 的激活函数。gate 和 up 投影由上游 Linear 完成，SwiGLU 只做逐元素激活和乘法。
+
+```
+输入: 2个
+  - input(0): gate tensor (W_gate @ x)
+  - input(1): up tensor (W_up @ x)
+输出: 1个 — SiLU(gate) * up
+公式: output = gate * sigmoid(gate) * up = (gate / (1 + exp(-gate))) * up
+```
+
+| 文件 | 路径 |
+|------|------|
+| 头文件 | [sys/include/op/swiglu.h](../sys/include/op/swiglu.h) |
+| 前端 | [sys/src/op/swiglu.cpp](../sys/src/op/swiglu.cpp) |
+| CPU后端 | [sys/src/op/kernel/cpu/swiglu_kernel.h](../sys/src/op/kernel/cpu/swiglu_kernel.h) / [swiglu_kernel.cpp](../sys/src/op/kernel/cpu/swiglu_kernel.cpp) |
+| GPU后端 | [sys/src/op/kernel/gpu/swiglu_kernel.cuh](../sys/src/op/kernel/gpu/swiglu_kernel.cuh) / [swiglu_kernel.cu](../sys/src/op/kernel/gpu/swiglu_kernel.cu) |
 
 ---
 
@@ -231,10 +322,13 @@ Matmul_backend get_matmul_interface(base::DeviceType_t device_type){
 | Add | `Add_backend` | `get_add_interface` |
 | Embedding | `Embedding_backend` | `get_emb_interface` |
 | RMSNorm | `RMSNorm_backend` | `get_rmsnorm_interface` |
+| Matmul | `Matmul_backend` | `get_matmul_interface` |
+| RoPE | `RoPE_backend` | `get_rope_interface` |
 | MHA | `MHA_backend` | `get_mha_interface` |
-| Linear | `Linear_backend` | (待实现) |
-| Matmul | `Matmul_backend` | (待实现) |
-| SwiGLU | `SwiGLU_backend` | (待实现) |
+| Softmax | `Softmax_backend` | `get_softmax_interface` |
+| SwiGLU | `SwiGLU_backend` | `get_swiglu_interface` |
+| Linear | `Linear_backend` | (同 Matmul) |
+| Encode | CPU专用 | 不走 kernel dispatch |
 
 ## CMake 注意事项
 
