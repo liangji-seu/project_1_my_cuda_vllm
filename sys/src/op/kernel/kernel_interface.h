@@ -71,6 +71,8 @@ typedef void (*Embedding_backend)(
     void* stream
 );
 
+Embedding_backend get_emb_interface(base::DeviceType_t device_type);
+
 
 //RMSNorm， 层归一化层
 //输入一个张量，输出一个张量，权重张量1个
@@ -80,6 +82,8 @@ typedef void (*RMSNorm_backend)(
     const tensor::Tensor& y,
     void* stream
 );
+
+RMSNorm_backend get_rmsnorm_interface(base::DeviceType_t device_type);
 
 
 //矩阵乘
@@ -99,8 +103,22 @@ typedef void (*RoPE_backend)(
 
 //多头注意力层MHA
 typedef void (*MHA_backend)(
-
+    int32_t pos,
+    int32_t head_num,
+    int32_t layer_index,
+    int32_t seq_len,
+    int32_t kv_dim,
+    int32_t kv_mul,
+    int32_t head_size,
+    const tensor::Tensor& mha_out,
+    const tensor::Tensor& query_tensor,
+    const tensor::Tensor& score_tensor,
+    const tensor::Tensor& key_cache_tensor,
+    const tensor::Tensor& value_cache_tensor,
+    void* stream
 );
+
+MHA_backend get_mha_interface(base::DeviceType_t device_type);
 
 //softmax
 typedef void (Softmax_backend)(

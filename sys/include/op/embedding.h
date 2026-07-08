@@ -5,19 +5,22 @@
 
 namespace op{
 
+class EmbeddingLayer : public LayerParam {
+private:
+  int32_t dim_ = 0;
+  int32_t seq_len_ = 0;
+  int32_t vocab_size_ = 0;
 
-    class EmbeddingLayer : public LayerParam{
-        public:
-            explicit EmbeddingLayer(
-                base::DeviceType_t device_type = base::DeviceType_t::Unknown
-            );
+public:
+  explicit EmbeddingLayer(
+      base::DeviceType_t device_type,
+      int32_t dim,
+      int32_t seq_len,
+      int32_t vocab_size);
 
-            //自检
-            base::error::Status check_layer() override;
+  base::error::Status check_layer() override;
 
-            //重定向该算子的后端接口获取
-            base::error::Status forward() override;
-    };
+  base::error::Status forward() override;
+};
 
-
-}
+}  // namespace op
