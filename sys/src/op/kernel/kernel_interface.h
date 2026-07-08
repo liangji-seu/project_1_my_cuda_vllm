@@ -100,8 +100,18 @@ Matmul_backend get_matmul_interface(base::DeviceType_t device_type);
 
 //旋转位置编码， RoPE
 typedef void (*RoPE_backend)(
-    
+    int32_t dim,
+    int32_t kv_dim,
+    int32_t head_size,
+    const tensor::Tensor& input_q,
+    const tensor::Tensor& input_k,
+    const tensor::Tensor& input_pos,
+    const tensor::Tensor& sin_cache,
+    const tensor::Tensor& cos_cache,
+    void* stream
 );
+
+RoPE_backend get_rope_interface(base::DeviceType_t device_type);
 
 //多头注意力层MHA
 typedef void (*MHA_backend)(
