@@ -133,9 +133,12 @@ typedef void (*MHA_backend)(
 MHA_backend get_mha_interface(base::DeviceType_t device_type);
 
 //softmax
-typedef void (Softmax_backend)(
-
+typedef void (*Softmax_backend)(
+    const tensor::Tensor& x,
+    void* stream
 );
+
+Softmax_backend get_softmax_interface(base::DeviceType_t device_type);
 
 //加法
 typedef void (*Add_backend)(
