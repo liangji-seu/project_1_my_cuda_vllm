@@ -4,6 +4,7 @@
 #include "cpu/emb_kernel.h"
 #include "cpu/rmsnorm_kernel.h"
 #include "cpu/matmul_kernel.h"
+#include "cpu/swiglu_kernel.h"
 #include "cpu/softmax_kernel.h"
 #include "cpu/rope_kernel.h"
 #include "cpu/mha_kernel.h"
@@ -11,6 +12,7 @@
 #include "gpu/emb_kernel.cuh"
 #include "gpu/rmsnorm_kernel.cuh"
 #include "gpu/matmul_kernel.cuh"
+#include "gpu/swiglu_kernel.cuh"
 #include "gpu/softmax_kernel.cuh"
 #include "gpu/rope_kernel.cuh"
 #include "gpu/mha_kernel.cuh"
@@ -96,6 +98,18 @@ MHA_backend get_mha_interface(base::DeviceType_t device_type){
         return mha_kernel_cpu;
     } else if(device_type == base::DeviceType_t::GPU){
         return mha_kernel_cuda;
+    } else {
+        LOG(ERROR)<<"error device type";
+        return nullptr;
+    }
+}
+
+//SwiGLU层
+SwiGLU_backend get_swiglu_interface(base::DeviceType_t device_type){
+    if(device_type == base::DeviceType_t::CPU){
+        return swiglu_kernel_cpu;
+    } else if(device_type == base::DeviceType_t::GPU){
+        return swiglu_kernel_cuda;
     } else {
         LOG(ERROR)<<"error device type";
         return nullptr;

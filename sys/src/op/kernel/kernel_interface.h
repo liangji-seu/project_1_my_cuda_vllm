@@ -150,10 +150,13 @@ typedef void (*Add_backend)(
 
 //SwiGLU 激活函数
 typedef void (*SwiGLU_backend)(
-    const tensor::Tensor& x,
+    const tensor::Tensor& x1,
+    const tensor::Tensor& x2,
     const tensor::Tensor& y,
     void* stream
 );
+
+SwiGLU_backend get_swiglu_interface(base::DeviceType_t device_type);
 
 
 
