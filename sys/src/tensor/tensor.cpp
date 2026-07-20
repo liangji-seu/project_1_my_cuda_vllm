@@ -255,6 +255,12 @@ namespace tensor{
         return this->buffer->get_device_type();
     }
 
+    void Tensor::set_device_type(base::DeviceType_t device_type){
+        if (this->buffer) {
+            this->buffer->set_device_type(device_type);
+        }
+    }
+
     void* Tensor::get_ptr() {
         CHECK(this->buffer != nullptr);
         return this->buffer->get_ptr();

@@ -278,6 +278,18 @@ namespace op{
         return base::error::Status();
     }
 
+    base::error::Status LayerParam::set_weight(size_t idx, const std::vector<size_t>& dims,
+                                                const void* ptr, base::DeviceType_t device_type) {
+        CHECK(idx < weights.size());
+        CHECK(ptr != nullptr);
+
+        tensor::Tensor weight(data_type, dims, false, nullptr,
+                              const_cast<void*>(ptr));
+        weight.set_device_type(device_type);
+        weights[idx] = weight;
+        return base::error::Status();
+    }
+
     void LayerParam::set_scales(const tensor::Tensor& scales) {
         this->scales = scales;
     }

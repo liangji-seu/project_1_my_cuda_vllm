@@ -74,6 +74,10 @@ DeviceType_t Buffer::get_device_type() const {
     return device_type;
 }
 
+void Buffer::set_device_type(DeviceType_t type) {
+    device_type = type;
+}
+
 std::shared_ptr<DeviceController> Buffer::get_controller() const {
     return controller;
 }

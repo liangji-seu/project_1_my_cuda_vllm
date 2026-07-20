@@ -60,6 +60,7 @@ namespace tensor{
             const std::vector<size_t>& get_dims() const;//获取张量维度
             std::vector<size_t> get_strides() const; //获取+1时一维索引中的跨度
             base::DeviceType_t get_device_type() const;
+            void set_device_type(base::DeviceType_t device_type);
 
             void* get_ptr(); //获取底层的内存指针
             const void* get_ptr() const; //const版本

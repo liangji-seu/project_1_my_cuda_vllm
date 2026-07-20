@@ -35,6 +35,7 @@ public:
     size_t get_byte_size() const;                                               // 获取内存大小
     void* get_ptr() const;                                                      // 获取内存地址
     DeviceType_t get_device_type() const;                                // 获取内存的设备类型
+    void set_device_type(DeviceType_t type);                             // 设置内存的设备类型
     std::shared_ptr<DeviceController> get_controller() const;                   // 获取设备控制器
     bool get_flag_is_external() const;                                          // 获取外部内存标志
 };

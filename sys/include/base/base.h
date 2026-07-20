@@ -14,6 +14,17 @@ enum class DeviceType_t {
     GPU = 2,
 };
 
+enum class ModelType : uint8_t {
+    kModelTypeUnknown = 0,
+    kModelTypeLLama2 = 1,
+};
+
+enum class TokenizerType {
+    kEncodeUnknown = -1,
+    kEncodeSpe = 0,
+    kEncodeBpe = 1,
+};
+
 
 
 // 属性基类：禁止拷贝构造

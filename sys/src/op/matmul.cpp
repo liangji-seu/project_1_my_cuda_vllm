@@ -8,7 +8,7 @@ MatmulLayer::MatmulLayer(base::DeviceType_t device_type, float scale)
       LayerParam(device_type, LayerType_t::Matmul, false, "Matmul") {
   reset_input_tensor_num(1);
   reset_output_tensor_num(1);
-  reset_weight_tensor_num(2);  // W + b
+  reset_weight_tensor_num(1);  // W
 }
 
 base::error::Status MatmulLayer::check_layer() {
@@ -23,7 +23,6 @@ base::error::Status MatmulLayer::forward() {
 
   auto input = this->get_input(0);
   auto weight = this->get_weight(0);
-  auto bias = this->get_weight(1);
   auto output = this->get_output(0);
 
   void* stream_ptr = nullptr;

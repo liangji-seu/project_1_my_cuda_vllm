@@ -5,6 +5,19 @@
 
 namespace op{
 
+struct EmbeddingOutput {
+  tensor::Tensor input_tokens;
+  tensor::Tensor input_embeddings;
+  tensor::Tensor input_token_num;
+
+  explicit EmbeddingOutput(tensor::Tensor input_tokens,
+                           tensor::Tensor input_embeddings,
+                           tensor::Tensor input_token_num)
+      : input_tokens(std::move(input_tokens)),
+        input_embeddings(std::move(input_embeddings)),
+        input_token_num(std::move(input_token_num)) {}
+};
+
 class EmbeddingLayer : public LayerParam {
 private:
   int32_t dim_ = 0;
