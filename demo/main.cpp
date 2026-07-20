@@ -61,7 +61,7 @@ int main(int argc, char* argv[]) {
 
   model::LLama2Model model(base::TokenizerType::kEncodeBpe, tokenizer_path,
                            checkpoint_path, false);
-  auto init_status = model.init(base::DeviceType_t::CPU);
+  auto init_status = model.init(base::DeviceType_t::GPU);
   if (!init_status) {
     LOG(FATAL) << "The model init failed, the error code is: "
                << static_cast<int>(init_status.get_err_code());
