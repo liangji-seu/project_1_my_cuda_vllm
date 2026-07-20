@@ -12,6 +12,7 @@ struct ModelConfig {
   int32_t kv_head_num = 0;
   int32_t vocab_size = 0;
   int32_t seq_len = 0;
+  int32_t head_dim = 0;
 };
 
 struct TransformerConfig {
@@ -19,6 +20,7 @@ struct TransformerConfig {
   int32_t kv_mul_ = 0;
   int32_t head_size_ = 0;
   int32_t vocab_size_ = 0;
+  int32_t q_dim_ = 0;
 
   int32_t dim_ = 0;
   int32_t hidden_dim_ = 0;

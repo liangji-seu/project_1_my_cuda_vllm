@@ -12,9 +12,15 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_STANDARD 14)
 
-option(LLAMA3_SUPPORT "Enable Llama3 BPE tokenizer support" ON)
+option(LLAMA3_SUPPORT "Enable Llama3 BPE tokenizer support" OFF)
+option(QWEN3_SUPPORT "Enable Qwen3 BPE tokenizer support" ON)
+
 if (LLAMA3_SUPPORT)
   add_definitions(-DLLAMA3_SUPPORT)
+endif()
+
+if (QWEN3_SUPPORT)
+  add_definitions(-DQWEN3_SUPPORT)
 endif()
 
 # ---- Dependencies ----

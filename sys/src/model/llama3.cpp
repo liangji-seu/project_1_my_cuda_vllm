@@ -63,7 +63,7 @@ base::error::Status LLama2Model::predict(const tensor::Tensor& input,
 void LLama2Model::create_nonparam_layers() {
   CHECK(llama_layers_ != nullptr);
   llama_layers_->rope_layer_ = std::make_shared<op::RoPELayer>(
-      device_type_, config_->dim_, config_->kv_dim_, config_->head_size_);
+      device_type_, config_->q_dim_, config_->kv_dim_, config_->head_size_);
 
   llama_layers_->mha_layer_ = std::make_shared<op::MultiHeadAttentionLayer>(
       device_type_, 0, config_->kv_mul_, config_->kv_dim_,
@@ -102,10 +102,10 @@ void LLama2Model::create_param_layers() {
   // Wq layers
   for (int32_t i = 0; i < config_->layer_num_; ++i) {
     auto wq = std::make_shared<op::MatmulLayer>(device_type_);
-    wq->set_weight(0, {static_cast<size_t>(dim), static_cast<size_t>(dim)},
+    wq->set_weight(0, {static_cast<size_t>(config_->q_dim_), static_cast<size_t>(dim)},
                    raw_model_data_->weight(pos), cpu_device_type);
     llama_layers_->wq_layers_.push_back(wq);
-    pos += dim * dim;
+    pos += config_->q_dim_ * dim;
   }
 
   // Wk layers
@@ -129,10 +129,10 @@ void LLama2Model::create_param_layers() {
   // Wo layers
   for (int32_t i = 0; i < config_->layer_num_; ++i) {
     auto wo = std::make_shared<op::MatmulLayer>(device_type_);
-    wo->set_weight(0, {static_cast<size_t>(dim), static_cast<size_t>(dim)},
+    wo->set_weight(0, {static_cast<size_t>(dim), static_cast<size_t>(config_->q_dim_)},
                    raw_model_data_->weight(pos), cpu_device_type);
     llama_layers_->wo_layers_.push_back(wo);
-    pos += dim * dim;
+    pos += dim * config_->q_dim_;
   }
 
   // Skip ffn rmsnorm
@@ -195,10 +195,10 @@ void LLama2Model::create_param_layers() {
   }
 
   // Skip attention QKV weights to reach FFN rmsnorm
-  rmsnorm_pos += config_->layer_num_ * dim * dim;          // wq
+  rmsnorm_pos += config_->layer_num_ * config_->q_dim_ * dim;    // wq
   rmsnorm_pos += config_->layer_num_ * config_->kv_dim_ * dim;  // wk
   rmsnorm_pos += config_->layer_num_ * config_->kv_dim_ * dim;  // wv
-  rmsnorm_pos += config_->layer_num_ * dim * dim;          // wo
+  rmsnorm_pos += config_->layer_num_ * dim * config_->q_dim_;    // wo
 
   for (int32_t i = 0; i < config_->layer_num_; ++i) {
     auto rms = std::make_shared<op::RmsNormLayer>(device_type_, dim);
@@ -244,9 +244,13 @@ void LLama2Model::init_mem() {
   tensor::Tensor rms_output(tensor::DataType_t::fp32, {static_cast<size_t>(config_->dim_)},
                             true, cpu_alloc);
   CHECK(insert_buffer(ModelBufferType::kOutputRMSNorm, rms_output));
-  CHECK(insert_buffer(ModelBufferType::kOutputMHA, rms_output));
   CHECK(insert_buffer(ModelBufferType::kW2Output, rms_output));
   CHECK(insert_buffer(ModelBufferType::kFFNRMSNorm, rms_output));
+
+  // MHA output (before Wo projection)
+  tensor::Tensor mha_output(tensor::DataType_t::fp32,
+                            {static_cast<size_t>(config_->q_dim_)}, true, cpu_alloc);
+  CHECK(insert_buffer(ModelBufferType::kOutputMHA, mha_output));
 
   // SwiGLU outputs
   tensor::Tensor w1_output(tensor::DataType_t::fp32,
@@ -271,9 +275,14 @@ void LLama2Model::init_mem() {
   CHECK(insert_buffer(ModelBufferType::kValueCache, value_cache));
 
   // Query buffer
-  tensor::Tensor query(tensor::DataType_t::fp32, {static_cast<size_t>(config_->dim_)},
+  tensor::Tensor query(tensor::DataType_t::fp32, {static_cast<size_t>(config_->q_dim_)},
                        true, cpu_alloc);
   CHECK(insert_buffer(ModelBufferType::kQuery, query));
+
+  // Attention output (after Wo projection, back to residual dim)
+  tensor::Tensor attn_output(tensor::DataType_t::fp32, {static_cast<size_t>(config_->dim_)},
+                             true, cpu_alloc);
+  CHECK(insert_buffer(ModelBufferType::kAttnOutput, attn_output));
 
   // Position tensor
   tensor::Tensor pos_tensor(tensor::DataType_t::int32, {1}, true, cpu_alloc);
@@ -285,7 +294,6 @@ void LLama2Model::init_mem() {
                        static_cast<size_t>(config_->seq_len_)},
                       true, cpu_alloc);
   CHECK(insert_buffer(ModelBufferType::kScoreStorage, attn));
-  CHECK(insert_buffer(ModelBufferType::kAttnOutput, query));
 
   // Forward output
   tensor::Tensor forward_output(tensor::DataType_t::fp32,

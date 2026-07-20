@@ -13,3 +13,5 @@ compile_commands.json
 *~
 .DS_Store
 models/
+bin/
+__pycache__/

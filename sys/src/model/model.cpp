@@ -129,9 +129,10 @@ base::error::Status Model::generate_model_infos(const ModelConfig& config) const
   config_->kv_head_num_ = config.kv_head_num;
   config_->seq_len_ = config.seq_len;
 
-  config_->kv_dim_ = (config.dim * config.kv_head_num) / config.head_num;
+  config_->head_size_ = config.head_dim > 0 ? config.head_dim : config.dim / config.head_num;
+  config_->kv_dim_ = config_->head_size_ * config.kv_head_num;
   config_->kv_mul_ = config.head_num / config.kv_head_num;
-  config_->head_size_ = config.dim / config.head_num;
+  config_->q_dim_ = config_->head_size_ * config.head_num;
 
   if (config.vocab_size > 0) {
     config_->is_shared_weight_ = true;
@@ -143,7 +144,9 @@ base::error::Status Model::generate_model_infos(const ModelConfig& config) const
 }
 
 base::error::Status Model::create_encode_layer() {
-#ifdef LLAMA3_SUPPORT
+#if defined(QWEN3_SUPPORT)
+  encode_layer_ = std::make_unique<op::QwenEncodeLayer>(token_path_, true, false);
+#elif defined(LLAMA3_SUPPORT)
   encode_layer_ = std::make_unique<op::BpeEncodeLayer>(token_path_, true, false);
 #endif
   if (!encode_layer_) {

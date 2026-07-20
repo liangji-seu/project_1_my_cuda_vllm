@@ -4,7 +4,7 @@
 
 namespace op {
 
-#if defined(LLAMA3_SUPPORT)
+#if defined(LLAMA3_SUPPORT) || defined(QWEN3_SUPPORT)
 static const std::string PAT_STR =
     R"((?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?:$|[^\S])|\s+)";
 
@@ -91,6 +91,34 @@ bool BpeEncodeLayer::is_sentence_ending(int32_t token_id) const {
 int32_t BpeEncodeLayer::vocab_size() const {
   CHECK(this->tiktoken_ != nullptr);
   return num_token_;
+}
+
+QwenEncodeLayer::QwenEncodeLayer(std::string token_model_path, bool has_bos, bool has_eos)
+    : BpeEncodeLayer(std::move(token_model_path), has_bos, has_eos) {
+  // BpeEncodeLayer already parsed the JSON and created the tiktoken engine.
+  // Re-parse to get Qwen3-specific special token IDs.
+  using json = nlohmann::json;
+  std::ifstream f(token_model_path_);
+  CHECK(f.is_open()) << "Failed to open token model path: " << token_model_path_;
+  json data;
+  try {
+    data = json::parse(f);
+  } catch (json::parse_error&) {
+    LOG(FATAL) << "Failed to parse token model JSON: " << token_model_path_;
+  }
+
+  const auto& datas = data["added_tokens"];
+  ankerl::unordered_dense::map<std::string, int> special_tokens;
+  for (const auto& data1 : datas) {
+    int id = data1["id"];
+    std::string content = data1["content"];
+    special_tokens.insert({content, id});
+  }
+
+  bos_id_ = special_tokens["<|im_start|>"];
+  eos_id_ = special_tokens["<|im_end|>"];
+  stop_token1_ = eos_id_;
+  stop_token2_ = special_tokens["<|endoftext|>"];
 }
 #endif
 

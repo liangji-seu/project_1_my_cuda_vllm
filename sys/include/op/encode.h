@@ -6,7 +6,7 @@
 
 #include "op/layer.h"
 
-#if defined(LLAMA3_SUPPORT)
+#if defined(LLAMA3_SUPPORT) || defined(QWEN3_SUPPORT)
 #include <absl/strings/str_join.h>
 #include <absl/strings/str_replace.h>
 #include <absl/strings/str_split.h>
@@ -45,7 +45,7 @@ public:
 
 
 
-#if defined(LLAMA3_SUPPORT)
+#if defined(LLAMA3_SUPPORT) || defined(QWEN3_SUPPORT)
 class BpeEncodeLayer : public EncodeLayerBase {
 protected:
   int32_t bos_id_ = -1;
@@ -65,6 +65,11 @@ public:
   std::string decode(const std::vector<int32_t>& token_ids) const override;
   bool is_sentence_ending(int32_t token_id) const override;
   int32_t vocab_size() const override;
+};
+
+class QwenEncodeLayer : public BpeEncodeLayer {
+ public:
+  explicit QwenEncodeLayer(std::string token_model_path, bool has_bos, bool has_eos);
 };
 #endif
 
