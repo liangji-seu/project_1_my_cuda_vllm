@@ -81,3 +81,6 @@ target_include_directories(my_cuda_vllm PUBLIC
 
 # ---- Test target ----
 add_subdirectory(test)
+
+# ---- Demo target ----
+add_subdirectory(demo)
