@@ -4,7 +4,7 @@
 
 #include "base/DeviceController.h"
 #include "../op/kernel/cpu/rope_kernel.h"
-#include "sampler/argmax_sampler.h"
+#include "sampler/topk_sampler.h"
 
 namespace model {
 
@@ -27,7 +27,7 @@ base::error::Status LLama2Model::init(base::DeviceType_t device_type) {
 
   init_mem();
 
-  sampler_ = std::make_unique<sampler::ArgmaxSampler>(device_type_);
+  sampler_ = std::make_unique<sampler::TopKSampler>(device_type_, 0.6f, 20, 0.95f);
   return base::error::Status();
 }
 
@@ -169,8 +169,8 @@ void LLama2Model::create_param_layers() {
 
   // Skip final rmsnorm weight
   pos += dim;
-  // Skip freqs_cos and freqs_sin weight (2 arrays)
-  pos += 2 * config_->seq_len_ * config_->head_size_;
+  // Skip freqs_cos and freqs_sin weight (each [seq_len, head_size/2] for RoPE)
+  pos += config_->seq_len_ * config_->head_size_;
 
   // CLS layer
   llama_layers_->cls_layer_ =
@@ -232,7 +232,7 @@ void LLama2Model::create_param_layers() {
       + config_->layer_num_ * dim * hidden_dim                           // w2
       + config_->layer_num_ * dim * hidden_dim                           // w3
       + dim                                                              // final rmsnorm
-      + 2 * config_->seq_len_ * config_->head_size_;                    // freqs
+      + config_->seq_len_ * config_->head_size_;                        // freqs (each [seq_len, head_size/2])
 
   if (!config_->is_shared_weight_) {
     qk_norm_pos += config_->vocab_size_ * dim;  // CLS weight
