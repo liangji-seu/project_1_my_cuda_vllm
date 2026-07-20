@@ -22,7 +22,7 @@ void rmsnorm_kernel_cpu(const tensor::Tensor& input, const tensor::Tensor& weigh
   arma::fvec out_tensor(out_ptr, dim, false, true);
   arma::fvec wei_tensor(const_cast<float*>(wei_ptr), dim, false, true);
 
-  const float eps = 1e-5f;
+  const float eps = 1e-6f;  // Qwen2.5 rms_norm_eps = 1e-6
 
   const float mean = arma::as_scalar(arma::mean(arma::pow(in_tensor, 2))) + eps;
   const float rsqrt = 1.0f / std::sqrt(mean);

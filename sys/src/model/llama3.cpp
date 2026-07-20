@@ -5,6 +5,7 @@
 #include "base/DeviceController.h"
 #include "../op/kernel/cpu/rope_kernel.h"
 #include "sampler/topk_sampler.h"
+#include "sampler/argmax_sampler.h"
 
 namespace model {
 
@@ -27,7 +28,8 @@ base::error::Status LLama2Model::init(base::DeviceType_t device_type) {
 
   init_mem();
 
-  sampler_ = std::make_unique<sampler::TopKSampler>(device_type_, 0.6f, 20, 0.95f);
+  sampler_ = std::make_unique<sampler::ArgmaxSampler>(device_type_);
+  // sampler_ = std::make_unique<sampler::TopKSampler>(device_type_, 0.6f, 20, 0.95f);
   return base::error::Status();
 }
 
@@ -225,8 +227,17 @@ void LLama2Model::create_param_layers() {
 
   // Skip attention QKV weights to reach FFN rmsnorm
   rmsnorm_pos += config_->layer_num_ * config_->q_dim_ * dim;    // wq
+  if (!llama_layers_->q_bias_.empty()) {
+    rmsnorm_pos += config_->layer_num_ * config_->q_dim_;         // Wq bias
+  }
   rmsnorm_pos += config_->layer_num_ * config_->kv_dim_ * dim;  // wk
+  if (!llama_layers_->q_bias_.empty()) {
+    rmsnorm_pos += config_->layer_num_ * config_->kv_dim_;        // Wk bias
+  }
   rmsnorm_pos += config_->layer_num_ * config_->kv_dim_ * dim;  // wv
+  if (!llama_layers_->q_bias_.empty()) {
+    rmsnorm_pos += config_->layer_num_ * config_->kv_dim_;        // Wv bias
+  }
   rmsnorm_pos += config_->layer_num_ * dim * config_->q_dim_;    // wo
 
   for (int32_t i = 0; i < config_->layer_num_; ++i) {

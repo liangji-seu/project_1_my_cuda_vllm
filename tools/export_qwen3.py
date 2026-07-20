@@ -576,7 +576,6 @@ def load_hf_model(model_path):
         config.max_seq_len = config_json["max_position_embeddings"]
         config.head_dim = config_json.get("head_dim", 0)
         config.has_qk_norm = ('qwen3' in config_json.get('model_type', ''))
-        config.has_qkv_bias = False  # detect from model after loading
     else:
         config.dim = hf_model.config.hidden_size
         config.n_layers = hf_model.config.num_hidden_layers
@@ -588,9 +587,10 @@ def load_hf_model(model_path):
         config.max_seq_len = hf_model.config.max_position_embeddings
         config.head_dim = getattr(hf_model.config, "head_dim", 0)
         config.has_qk_norm = ('qwen3' in getattr(hf_model.config, 'model_type', ''))
-        # Detect QKV bias (some models like Qwen2.5 have bias in Q/K/V projections)
-        first_q_bias = hf_dict.get('model.layers.0.self_attn.q_proj.bias')
-        config.has_qkv_bias = (first_q_bias is not None)
+
+    # Detect QKV bias (some models like Qwen2.5 have bias in Q/K/V projections)
+    first_q_bias = hf_dict.get('model.layers.0.self_attn.q_proj.bias')
+    config.has_qkv_bias = (first_q_bias is not None)
 
     # create a new Transformer object and set weights
     model = Transformer(config)
