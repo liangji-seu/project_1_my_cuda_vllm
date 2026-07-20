@@ -36,6 +36,11 @@ struct LLama2Layers {
   // Q/K normalization weights (Qwen3 specific)
   std::vector<const float*> q_norm_weights_;  // [head_size] per layer
   std::vector<const float*> k_norm_weights_;  // [head_size] per layer
+
+  // Q/K/V bias (some models like Qwen2.5 have bias in QKV projections)
+  std::vector<const float*> q_bias_;  // [q_dim] per layer
+  std::vector<const float*> k_bias_;  // [kv_dim] per layer
+  std::vector<const float*> v_bias_;  // [kv_dim] per layer
 };
 
 class LLama2Model : public Model {

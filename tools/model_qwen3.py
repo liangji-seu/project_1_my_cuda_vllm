@@ -23,6 +23,8 @@ class ModelArgs:
     max_seq_len: int = 2048
     dropout: float = 0.0
     head_dim: int = 0
+    has_qk_norm: bool = False  # Qwen3 has Q/K norms, Qwen2 does not
+    has_qkv_bias: bool = False  # Some models have bias in Q/K/V projections
 
 
 class RMSNorm(torch.nn.Module):
@@ -40,19 +42,20 @@ class RMSNorm(torch.nn.Module):
 
 
 def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0):
-    freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
-    t = torch.arange(end, device=freqs.device)  # type: ignore
-    freqs = torch.outer(t, freqs).float()  # type: ignore
-    freqs_cos = torch.cos(freqs)  # real part
-    freqs_sin = torch.sin(freqs)  # imaginary part
+    # Matches HuggingFace Qwen2RotaryEmbedding: produce [end, dim]
+    inv_freq = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
+    t = torch.arange(end, device=inv_freq.device)  # type: ignore
+    freqs = torch.outer(t, inv_freq).float()  # type: ignore  [end, dim//2]
+    emb = torch.cat((freqs, freqs), dim=-1)  # [end, dim]  — LLaMA-style
+    freqs_cos = torch.cos(emb)  # real part
+    freqs_sin = torch.sin(emb)  # imaginary part
     return freqs_cos, freqs_sin
 
-def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor):
-    ndim = x.ndim
-    assert 0 <= 1 < ndim
-    assert freqs_cis.shape == (x.shape[1], x.shape[-1])
-    shape = [d if i == 1 or i == ndim - 1 else 1 for i, d in enumerate(x.shape)]
-    return freqs_cis.view(shape)
+def rotate_half(x: torch.Tensor) -> torch.Tensor:
+    """Rotates half the hidden dims of the input (LLaMA-style RoPE helper)."""
+    x1 = x[..., : x.shape[-1] // 2]
+    x2 = x[..., x.shape[-1] // 2 :]
+    return torch.cat((-x2, x1), dim=-1)
 
 def apply_rotary_emb(
     xq: torch.Tensor,
@@ -60,25 +63,14 @@ def apply_rotary_emb(
     freqs_cos: torch.Tensor,
     freqs_sin: torch.Tensor
 ) -> Tuple[torch.Tensor, torch.Tensor]:
+    # LLaMA-style RoPE: rotate (i, i+head_dim/2) pairs
+    # xq: [bsz, seqlen, n_heads, head_dim]
+    # freqs_cos/sin: [seqlen, head_dim]
+    cos = freqs_cos[:xq.shape[1], :].unsqueeze(0).unsqueeze(2)  # [1, seqlen, 1, head_dim]
+    sin = freqs_sin[:xq.shape[1], :].unsqueeze(0).unsqueeze(2)
 
-    # reshape xq and xk to match the complex representation
-    xq_r, xq_i = xq.float().reshape(xq.shape[:-1] + (-1, 2)).unbind(-1)
-    xk_r, xk_i = xk.float().reshape(xk.shape[:-1] + (-1, 2)).unbind(-1)
-
-    # reshape freqs_cos and freqs_sin for broadcasting
-    freqs_cos = reshape_for_broadcast(freqs_cos, xq_r)
-    freqs_sin = reshape_for_broadcast(freqs_sin, xq_r)
-
-    # apply rotation using real numbers
-    xq_out_r = xq_r * freqs_cos - xq_i * freqs_sin
-    xq_out_i = xq_r * freqs_sin + xq_i * freqs_cos
-    xk_out_r = xk_r * freqs_cos - xk_i * freqs_sin
-    xk_out_i = xk_r * freqs_sin + xk_i * freqs_cos
-
-    # flatten last two dimensions
-    xq_out = torch.stack([xq_out_r, xq_out_i], dim=-1).flatten(3)
-    xk_out = torch.stack([xk_out_r, xk_out_i], dim=-1).flatten(3)
-
+    xq_out = (xq.float() * cos) + (rotate_half(xq.float()) * sin)
+    xk_out = (xk.float() * cos) + (rotate_half(xk.float()) * sin)
     return xq_out.type_as(xq), xk_out.type_as(xk)
 
 def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
@@ -102,17 +94,19 @@ class Attention(nn.Module):
         self.n_local_kv_heads = self.n_kv_heads // model_parallel_size
         self.n_rep = self.n_local_heads // self.n_local_kv_heads
         self.head_dim = args.head_dim if args.head_dim > 0 else args.dim // args.n_heads
-        self.wq = nn.Linear(args.dim, args.n_heads * self.head_dim, bias=False)
-        self.wk = nn.Linear(args.dim, self.n_kv_heads * self.head_dim, bias=False)
-        self.wv = nn.Linear(args.dim, self.n_kv_heads * self.head_dim, bias=False)
+        self.wq = nn.Linear(args.dim, args.n_heads * self.head_dim, bias=args.has_qkv_bias)
+        self.wk = nn.Linear(args.dim, self.n_kv_heads * self.head_dim, bias=args.has_qkv_bias)
+        self.wv = nn.Linear(args.dim, self.n_kv_heads * self.head_dim, bias=args.has_qkv_bias)
         self.wo = nn.Linear(args.n_heads * self.head_dim, args.dim, bias=False)
         self.attn_dropout = nn.Dropout(args.dropout)
         self.resid_dropout = nn.Dropout(args.dropout)
         self.dropout = args.dropout
 
-        # Q/K normalization (Qwen3 specific)
-        self.q_norm = RMSNorm(self.head_dim, eps=args.norm_eps)
-        self.k_norm = RMSNorm(self.head_dim, eps=args.norm_eps)
+        # Q/K normalization (Qwen3 specific, Qwen2.x does not have this)
+        self.has_qk_norm = args.has_qk_norm
+        if self.has_qk_norm:
+            self.q_norm = RMSNorm(self.head_dim, eps=args.norm_eps)
+            self.k_norm = RMSNorm(self.head_dim, eps=args.norm_eps)
 
         # use flash attention or a manual implementation?
         self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
@@ -136,9 +130,10 @@ class Attention(nn.Module):
         xk = xk.view(bsz, seqlen, self.n_local_kv_heads, self.head_dim)
         xv = xv.view(bsz, seqlen, self.n_local_kv_heads, self.head_dim)
 
-        # Q/K normalization (Qwen3 specific)
-        xq = self.q_norm(xq)
-        xk = self.k_norm(xk)
+        # Q/K normalization (Qwen3 specific, Qwen2.x skips this)
+        if self.has_qk_norm:
+            xq = self.q_norm(xq)
+            xk = self.k_norm(xk)
 
         # RoPE relative positional embeddings
         xq, xk = apply_rotary_emb(xq, xk, freqs_cos, freqs_sin)
