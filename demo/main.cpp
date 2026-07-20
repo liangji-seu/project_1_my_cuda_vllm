@@ -7,7 +7,9 @@
 
 #include "model/llama3.h"
 
-#define DEFAULT_PROMPT "hello"
+#define DEFAULT_MODEL_PATH "/home/liangji/AI_INFRA/projects/my_cuda_vllm/demo/qwen3_0_6b.bin"
+#define DEFAULT_VOCAB_PATH "/home/liangji/huggingface/Qwen3-0.6B/tokenizer.json"
+#define DEFAULT_PROMPT     "请你给我介绍一下东南大学"
 
 int32_t generate(model::LLama2Model& model, const std::string& sentence,
                  int total_steps, bool need_output = false) {
@@ -54,15 +56,15 @@ int32_t generate(model::LLama2Model& model, const std::string& sentence,
 }
 
 int main(int argc, char* argv[]) {
-  if (argc != 3) {
-    LOG(INFO) << "Usage: ./demo checkpoint_path tokenizer_path";
+  if (argc != 1 && argc != 3) {
+    LOG(INFO) << "Usage: ./demo [model_path vocab_path]";
     return -1;
   }
-  const char* checkpoint_path = argv[1];
-  const char* tokenizer_path = argv[2];
+  const char* model_path = (argc >= 3) ? argv[1] : DEFAULT_MODEL_PATH;
+  const char* vocab_path  = (argc >= 3) ? argv[2] : DEFAULT_VOCAB_PATH;
 
-  model::LLama2Model model(base::TokenizerType::kEncodeBpe, tokenizer_path,
-                           checkpoint_path, false);
+  model::LLama2Model model(base::TokenizerType::kEncodeBpe, vocab_path,
+                           model_path, false);
   auto init_status = model.init(base::DeviceType_t::CPU);
   if (!init_status) {
     LOG(FATAL) << "The model init failed, the error code is: "
