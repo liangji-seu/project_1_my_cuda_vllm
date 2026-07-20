@@ -110,6 +110,10 @@ class Attention(nn.Module):
         self.resid_dropout = nn.Dropout(args.dropout)
         self.dropout = args.dropout
 
+        # Q/K normalization (Qwen3 specific)
+        self.q_norm = RMSNorm(self.head_dim, eps=args.norm_eps)
+        self.k_norm = RMSNorm(self.head_dim, eps=args.norm_eps)
+
         # use flash attention or a manual implementation?
         self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
         if not self.flash:
@@ -131,6 +135,10 @@ class Attention(nn.Module):
         xq = xq.view(bsz, seqlen, self.n_local_heads, self.head_dim)
         xk = xk.view(bsz, seqlen, self.n_local_kv_heads, self.head_dim)
         xv = xv.view(bsz, seqlen, self.n_local_kv_heads, self.head_dim)
+
+        # Q/K normalization (Qwen3 specific)
+        xq = self.q_norm(xq)
+        xk = self.k_norm(xk)
 
         # RoPE relative positional embeddings
         xq, xk = apply_rotary_emb(xq, xk, freqs_cos, freqs_sin)

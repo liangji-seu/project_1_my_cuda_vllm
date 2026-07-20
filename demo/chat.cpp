@@ -7,12 +7,14 @@
 
 #include "model/llama3.h"
 
-#define DEFAULT_MODEL_PATH   "/home/liangji/AI_INFRA/projects/my_cuda_vllm/demo/qwen3_0_6b.bin"
-#define DEFAULT_VOCAB_PATH   "/home/liangji/huggingface/Qwen3-0.6B/tokenizer.json"
+#define DEFAULT_MODEL_PATH   "/home/liangji/AI_INFRA/projects/my_cuda_vllm/demo/qwen3_0_6b_instruct.bin"
+#define DEFAULT_VOCAB_PATH   "/home/liangji/huggingface/Qwen3-0.6B-Instruct/tokenizer.json"
 
 static std::string build_chatml_prompt(const std::vector<std::string>& history) {
+  // Note: encode() prepends BOS (<|im_start|>), so the prompt itself should
+  // NOT start with <|im_start|> to avoid a double BOS token.
   std::string prompt;
-  prompt += "<|im_start|>system\n";
+  prompt += "system\n";
   prompt += "You are Qwen, created by Alibaba Cloud. You are a helpful assistant.";
   prompt += "<|im_end|>\n";
   for (size_t i = 0; i < history.size(); i += 2) {

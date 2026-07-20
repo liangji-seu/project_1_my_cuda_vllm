@@ -32,6 +32,10 @@ struct LLama2Layers {
 
   std::shared_ptr<op::Layer> cls_layer_;
   std::shared_ptr<op::Layer> embedding_layer_;
+
+  // Q/K normalization weights (Qwen3 specific)
+  std::vector<const float*> q_norm_weights_;  // [head_size] per layer
+  std::vector<const float*> k_norm_weights_;  // [head_size] per layer
 };
 
 class LLama2Model : public Model {

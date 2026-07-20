@@ -218,6 +218,37 @@ void LLama2Model::create_param_layers() {
   rms_final->set_weight(0, {static_cast<size_t>(dim)},
                         raw_model_data_->weight(rmsnorm_pos), cpu_device_type);
   llama_layers_->rmsnorm_layers_.push_back(rms_final);
+
+  // Q/K normalization weights (Qwen3 specific) - appended at end of file
+  // Compute position: after CLS layer (if not shared) or after freqs_cos/sin (if shared)
+  size_t qk_norm_pos = static_cast<size_t>(dim) * config_->vocab_size_  // embedding
+      + dim * config_->layer_num_                                        // attn rmsnorm
+      + config_->layer_num_ * config_->q_dim_ * dim                      // wq
+      + config_->layer_num_ * config_->kv_dim_ * dim                     // wk
+      + config_->layer_num_ * config_->kv_dim_ * dim                     // wv
+      + config_->layer_num_ * dim * config_->q_dim_                      // wo
+      + config_->layer_num_ * dim                                        // ffn rmsnorm
+      + config_->layer_num_ * dim * hidden_dim                           // w1
+      + config_->layer_num_ * dim * hidden_dim                           // w2
+      + config_->layer_num_ * dim * hidden_dim                           // w3
+      + dim                                                              // final rmsnorm
+      + 2 * config_->seq_len_ * config_->head_size_;                    // freqs
+
+  if (!config_->is_shared_weight_) {
+    qk_norm_pos += config_->vocab_size_ * dim;  // CLS weight
+  }
+
+  const int32_t head_size = config_->head_size_;
+  for (int32_t i = 0; i < config_->layer_num_; ++i) {
+    llama_layers_->q_norm_weights_.push_back(
+        static_cast<const float*>(raw_model_data_->weight(qk_norm_pos)));
+    qk_norm_pos += head_size;
+  }
+  for (int32_t i = 0; i < config_->layer_num_; ++i) {
+    llama_layers_->k_norm_weights_.push_back(
+        static_cast<const float*>(raw_model_data_->weight(qk_norm_pos)));
+    qk_norm_pos += head_size;
+  }
 }
 
 void LLama2Model::init_mem() {
@@ -393,6 +424,44 @@ void LLama2Model::attention_qkv(int32_t layer_idx, const tensor::Tensor& pos_ten
   const auto& value_layer = llama_layers_->wv_layers_.at(layer_idx);
   CHECK(value_layer != nullptr);
   STATUS_CHECK(value_layer->forward(rmsnorm_output, val));
+
+  // Q/K normalization (Qwen3 specific) - per-head RMSNorm
+  {
+    const int32_t head_size = config_->head_size_;
+    const int32_t head_num = config_->head_num_;
+    const int32_t kv_head_num = config_->kv_head_num_;
+    const float eps = 1e-6f;
+
+    // Q norm
+    float* q_ptr = static_cast<float*>(query.get_ptr());
+    const float* q_weight = llama_layers_->q_norm_weights_[layer_idx];
+    for (int32_t h = 0; h < head_num; ++h) {
+      float* head_q = q_ptr + h * head_size;
+      float sum_sq = 0.0f;
+      for (int32_t d = 0; d < head_size; ++d) {
+        sum_sq += head_q[d] * head_q[d];
+      }
+      float rms = 1.0f / std::sqrt(sum_sq / static_cast<float>(head_size) + eps);
+      for (int32_t d = 0; d < head_size; ++d) {
+        head_q[d] = head_q[d] * rms * q_weight[d];
+      }
+    }
+
+    // K norm
+    float* k_ptr = static_cast<float*>(key.get_ptr());
+    const float* k_weight = llama_layers_->k_norm_weights_[layer_idx];
+    for (int32_t h = 0; h < kv_head_num; ++h) {
+      float* head_k = k_ptr + h * head_size;
+      float sum_sq = 0.0f;
+      for (int32_t d = 0; d < head_size; ++d) {
+        sum_sq += head_k[d] * head_k[d];
+      }
+      float rms = 1.0f / std::sqrt(sum_sq / static_cast<float>(head_size) + eps);
+      for (int32_t d = 0; d < head_size; ++d) {
+        head_k[d] = head_k[d] * rms * k_weight[d];
+      }
+    }
+  }
 
   // RoPE
   CHECK(llama_layers_->rope_layer_ != nullptr);

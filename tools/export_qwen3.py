@@ -131,6 +131,12 @@ def legacy_export(model, filepath):
     if not shared_classifier:
         serialize_fp32(out_file, model.output.weight)
 
+    # Q/K normalization weights (Qwen3 specific)
+    for layer in model.layers:
+        serialize_fp32(out_file, layer.attention.q_norm.weight)
+    for layer in model.layers:
+        serialize_fp32(out_file, layer.attention.k_norm.weight)
+
     # write to binary file
     out_file.close()
     print(f"wrote {filepath}")
@@ -588,6 +594,8 @@ def load_hf_model(model_path):
         layer.attention.wk.weight = nn.Parameter(hf_dict[f'model.layers.{i}.self_attn.k_proj.weight'])
         layer.attention.wv.weight = nn.Parameter(hf_dict[f'model.layers.{i}.self_attn.v_proj.weight'])
         layer.attention.wo.weight = nn.Parameter(hf_dict[f'model.layers.{i}.self_attn.o_proj.weight'])
+        layer.attention.q_norm.weight = nn.Parameter(hf_dict[f'model.layers.{i}.self_attn.q_norm.weight'])
+        layer.attention.k_norm.weight = nn.Parameter(hf_dict[f'model.layers.{i}.self_attn.k_norm.weight'])
         layer.ffn_norm.weight = nn.Parameter(hf_dict[f'model.layers.{i}.post_attention_layernorm.weight'])
         layer.feed_forward.w1.weight = nn.Parameter(hf_dict[f'model.layers.{i}.mlp.gate_proj.weight'])
         layer.feed_forward.w2.weight = nn.Parameter(hf_dict[f'model.layers.{i}.mlp.down_proj.weight'])
