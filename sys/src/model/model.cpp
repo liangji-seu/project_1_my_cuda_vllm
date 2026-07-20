@@ -72,6 +72,15 @@ base::error::Status Model::read_model_file() {
                                "Failed to retrieve the configuration from the model file.");
   }
 
+  // Read flags field (4 bytes, after ModelConfig, before weights)
+  int32_t flags = FLAG_NONE;
+  size_t flags_read = fread(&flags, sizeof(int32_t), 1, file);
+  if (flags_read != 1) {
+    // Old format without flags — infer from legacy fields
+    flags = FLAG_TIED_WEIGHTS;  // Old format only had tied-weight models
+    LOG(WARNING) << "No flags field in model file, using legacy inference (may be wrong!)";
+  }
+
   if (is_quant_model_) {
     if (fread(&group_size_, sizeof(int32_t), 1, file) != 1) {
       return base::error::Status(base::error::kModelParseError,
@@ -80,7 +89,7 @@ base::error::Status Model::read_model_file() {
   }
   fclose(file);
 
-  auto gen_status = generate_model_infos(config);
+  auto gen_status = generate_model_infos(config, flags);
   if (!gen_status) {
     return gen_status;
   }
@@ -109,19 +118,23 @@ base::error::Status Model::read_model_file() {
                                    " into memory.");
   }
 
+  // Header layout: ModelConfig (32 bytes) + flags (4 bytes) [+ group_size for quant]
+  constexpr size_t kHeaderSize = sizeof(ModelConfig) + sizeof(int32_t);  // flags field
+
   if (!is_quant_model_) {
     raw_model_data_->weight_data =
-        static_cast<int8_t*>(raw_model_data_->data) + sizeof(ModelConfig);
+        static_cast<int8_t*>(raw_model_data_->data) + kHeaderSize;
   } else {
     raw_model_data_->weight_data =
-        static_cast<int8_t*>(raw_model_data_->data) + sizeof(ModelConfig) +
+        static_cast<int8_t*>(raw_model_data_->data) + kHeaderSize +
         sizeof(group_size_);
   }
 
   return base::error::Status();
 }
 
-base::error::Status Model::generate_model_infos(const ModelConfig& config) const {
+base::error::Status Model::generate_model_infos(const ModelConfig& config,
+                                                int32_t flags) const {
   config_->dim_ = config.dim;
   config_->hidden_dim_ = config.hidden_dim;
   config_->layer_num_ = config.layer_num;
@@ -134,11 +147,8 @@ base::error::Status Model::generate_model_infos(const ModelConfig& config) const
   config_->kv_mul_ = config.head_num / config.kv_head_num;
   config_->q_dim_ = config_->head_size_ * config.head_num;
 
-  if (config.vocab_size > 0) {
-    config_->is_shared_weight_ = true;
-  } else {
-    config_->is_shared_weight_ = false;
-  }
+  config_->flags_ = flags;
+  config_->is_shared_weight_ = (flags & FLAG_TIED_WEIGHTS) != 0;
   config_->vocab_size_ = std::abs(config.vocab_size);
   return base::error::Status();
 }
