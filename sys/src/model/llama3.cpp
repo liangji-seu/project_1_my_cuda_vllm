@@ -3,20 +3,9 @@
 #include <glog/logging.h>
 
 #include "base/DeviceController.h"
+#include "sampler/argmax_sampler.h"
 
 namespace model {
-
-static int32_t argmax(const float* data, size_t size) {
-  int32_t max_idx = 0;
-  float max_val = data[0];
-  for (size_t i = 1; i < size; ++i) {
-    if (data[i] > max_val) {
-      max_val = data[i];
-      max_idx = static_cast<int32_t>(i);
-    }
-  }
-  return max_idx;
-}
 
 LLama2Model::LLama2Model(base::TokenizerType tokenizer_type, std::string token_path,
                          std::string model_path, bool is_quant_model)
@@ -36,6 +25,8 @@ base::error::Status LLama2Model::init(base::DeviceType_t device_type) {
   }
 
   init_mem();
+
+  sampler_ = std::make_unique<sampler::ArgmaxSampler>(device_type_);
   return base::error::Status();
 }
 
@@ -485,7 +476,7 @@ int32_t LLama2Model::post_processing(const tensor::Tensor& pos, bool is_prompt) 
   const tensor::Tensor& forward_output = get_buffer(ModelBufferType::kForwardOutput);
   const float* forward_logits = static_cast<const float*>(forward_output.get_ptr());
 
-  return argmax(forward_logits, forward_output.get_size());
+  return static_cast<int32_t>(sampler_->sample(forward_logits, forward_output.get_size()));
 }
 
 }  // namespace model

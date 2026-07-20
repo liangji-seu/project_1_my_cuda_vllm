@@ -98,6 +98,23 @@ cls_logits ← RMSNorm(input) + Wcls(output) → logits
 post_processing ← argmax(logits)
 ```
 
+## 采样器
+
+通过独立的 `sampler` 模块完成 token 采样，解耦模型推理与输出选择：
+
+```
+sampler::Sampler (抽象基类)
+  └── sampler::ArgmaxSampler (贪婪采样)
+```
+
+| 文件 | 说明 |
+|------|------|
+| [sys/include/sampler/sampler.h](../sys/include/sampler/sampler.h) | Sampler 基类 |
+| [sys/include/sampler/argmax_sampler.h](../sys/include/sampler/argmax_sampler.h) | ArgmaxSampler 声明 |
+| [sys/src/sampler/argmax_sampler.cpp](../sys/src/sampler/argmax_sampler.cpp) | CPU: std::max_element, GPU: 预留 |
+
+在 `Model` 基类中持有 `sampler_`，由 `post_processing()` 调用。未来可扩展 temperature/top-p/top-k 采样器。
+
 ## 量化支持
 
 通过 `RawModelDataInt8` 子类支持 INT8 量化权重：

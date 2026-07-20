@@ -12,6 +12,7 @@
 #include "op/encode.h"
 #include "op/layer.h"
 #include "raw_model_data.h"
+#include "sampler/sampler.h"
 #include "tensor/tensor.h"
 
 namespace model {
@@ -34,6 +35,7 @@ class Model {
   base::TokenizerType tokenizer_type_ = base::TokenizerType::kEncodeUnknown;
 
   std::map<ModelBufferType, tensor::Tensor> buffers_;
+  std::unique_ptr<sampler::Sampler> sampler_;
 
  public:
   explicit Model(base::TokenizerType tokenizer_type, base::ModelType model_type,
