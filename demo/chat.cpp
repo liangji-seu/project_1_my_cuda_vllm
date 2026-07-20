@@ -7,6 +7,9 @@
 
 #include "model/llama3.h"
 
+#define DEFAULT_MODEL_PATH   "/home/liangji/AI_INFRA/projects/my_cuda_vllm/demo/qwen3_0_6b.bin"
+#define DEFAULT_VOCAB_PATH   "/home/liangji/huggingface/Qwen3-0.6B/tokenizer.json"
+
 static std::string build_chatml_prompt(const std::vector<std::string>& history) {
   std::string prompt;
   prompt += "<|im_start|>system\n";
@@ -78,15 +81,11 @@ static std::string generate(model::LLama2Model& model, const std::string& prompt
 int main(int argc, char* argv[]) {
   google::InitGoogleLogging(argv[0]);
 
-  if (argc != 3) {
-    LOG(INFO) << "Usage: ./chat <checkpoint_path> <tokenizer_path>";
-    return -1;
-  }
-  const char* checkpoint_path = argv[1];
-  const char* tokenizer_path = argv[2];
+  const char* model_path = (argc >= 2) ? argv[1] : DEFAULT_MODEL_PATH;
+  const char* vocab_path  = (argc >= 3) ? argv[2] : DEFAULT_VOCAB_PATH;
 
-  model::LLama2Model model(base::TokenizerType::kEncodeBpe, tokenizer_path,
-                           checkpoint_path, false);
+  model::LLama2Model model(base::TokenizerType::kEncodeBpe, vocab_path,
+                           model_path, false);
   auto init_status = model.init(base::DeviceType_t::CPU);
   if (!init_status) {
     LOG(FATAL) << "Model init failed: " << static_cast<int>(init_status.get_err_code());

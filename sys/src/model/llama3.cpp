@@ -3,6 +3,7 @@
 #include <glog/logging.h>
 
 #include "base/DeviceController.h"
+#include "../op/kernel/cpu/rope_kernel.h"
 #include "sampler/argmax_sampler.h"
 
 namespace model {
@@ -168,8 +169,8 @@ void LLama2Model::create_param_layers() {
 
   // Skip final rmsnorm weight
   pos += dim;
-  // Skip freqs_cos and freqs_sin weight
-  pos += config_->seq_len_ * config_->head_size_;
+  // Skip freqs_cos and freqs_sin weight (2 arrays)
+  pos += 2 * config_->seq_len_ * config_->head_size_;
 
   // CLS layer
   llama_layers_->cls_layer_ =
@@ -231,6 +232,10 @@ void LLama2Model::init_mem() {
                            true, cpu_alloc);
   CHECK(insert_buffer(ModelBufferType::kSinCache, sin_cache));
   CHECK(insert_buffer(ModelBufferType::kCosCache, cos_cache));
+
+  kernel::sin_cos_cache_calc_cpu(config_->head_size_, config_->seq_len_,
+                                 static_cast<float*>(sin_cache.get_ptr()),
+                                 static_cast<float*>(cos_cache.get_ptr()));
 
   // Input tokens and embeddings
   tensor::Tensor input_tokens(tensor::DataType_t::int32, {1}, true, cpu_alloc);
