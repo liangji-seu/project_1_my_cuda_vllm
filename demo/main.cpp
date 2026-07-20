@@ -7,6 +7,8 @@
 
 #include "model/llama3.h"
 
+#define DEFAULT_PROMPT "hello"
+
 int32_t generate(model::LLama2Model& model, const std::string& sentence,
                  int total_steps, bool need_output = false) {
   auto tokens = model.encode(sentence);
@@ -67,7 +69,7 @@ int main(int argc, char* argv[]) {
                << static_cast<int>(init_status.get_err_code());
   }
 
-  const std::string sentence = "hello";
+  const std::string sentence = DEFAULT_PROMPT;
 
   auto start = std::chrono::steady_clock::now();
   printf("Generating...\n");
