@@ -7,8 +7,8 @@
 
 #include "model/llama3.h"
 
-#define DEFAULT_MODEL_PATH   "/home/liangji/AI_INFRA/projects/my_cuda_vllm/demo/qwen3_0_6b_instruct.bin"
-#define DEFAULT_VOCAB_PATH   "/home/liangji/huggingface/Qwen3-0.6B-Instruct/tokenizer.json"
+#define DEFAULT_MODEL_PATH   "/home/liangji/AI_INFRA/projects/my_cuda_vllm/demo/qwen3_0_6b.bin"
+#define DEFAULT_VOCAB_PATH   "/home/liangji/huggingface/Qwen3-0.6B/tokenizer.json"
 
 static std::string build_chatml_prompt(const std::vector<std::string>& history) {
   // Note: encode() prepends BOS (<|im_start|>), so the prompt itself should
