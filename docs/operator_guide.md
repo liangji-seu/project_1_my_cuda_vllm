@@ -133,7 +133,7 @@ BaseLayer
 
 ```
 输入: 1个 — x [in_dim0] 或 [in_dim0, in_dim1]
-权重: 2个 — W [out_dim, in_dim0], bias (预留)
+权重: 1个 — W [out_dim, in_dim0]
 输出: 1个 — y = x * W^T * scale
 ```
 
