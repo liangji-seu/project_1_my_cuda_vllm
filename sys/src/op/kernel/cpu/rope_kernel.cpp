@@ -34,19 +34,18 @@ void rope_kernel_cpu(int32_t dim, int32_t kv_dim, int32_t head_size,
   const float* sin_ptr = static_cast<const float*>(sin_cache.get_ptr());
   const float* cos_ptr = static_cast<const float*>(cos_cache.get_ptr());
 
-  for (int32_t i = 0; i < dim; i += head_size) {
-    for (int32_t head_dim = i % head_size; head_dim < head_size / 2; ++head_dim) {
-      float fci = sin_ptr[pos * head_size + head_dim * 2];
-      float fcr = cos_ptr[pos * head_size + head_dim * 2];
+  for (int32_t i = 0; i < dim; i += 2) {
+    int32_t head_dim = i % head_size;
+    float fci = sin_ptr[pos * head_size + head_dim];
+    float fcr = cos_ptr[pos * head_size + head_dim];
 
-      int32_t rotn = i < kv_dim ? 2 : 1;
-      for (int32_t v = 0; v < rotn; ++v) {
-        float* vec = (v == 0) ? q_ptr : k_ptr;
-        float v0 = vec[i + head_dim];
-        float v1 = vec[i + head_dim + head_size / 2];
-        vec[i + head_dim] = v0 * fcr - v1 * fci;
-        vec[i + head_dim + head_size / 2] = v0 * fci + v1 * fcr;
-      }
+    int32_t rotn = i < kv_dim ? 2 : 1;
+    for (int32_t v = 0; v < rotn; ++v) {
+      float* vec = (v == 0) ? q_ptr : k_ptr;
+      float v0 = vec[i];
+      float v1 = vec[i + 1];
+      vec[i] = v0 * fcr - v1 * fci;
+      vec[i + 1] = v0 * fci + v1 * fcr;
     }
   }
 }
