@@ -10,6 +10,9 @@
 namespace base {
 
 
+    /**
+     * 内存控制器层
+     */
 
 //基类
 class DeviceController {
@@ -51,6 +54,11 @@ public:
                            void* stream = nullptr,
                            bool need_sync = false);
 };
+
+
+
+
+
 
 
 

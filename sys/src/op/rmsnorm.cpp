@@ -6,7 +6,7 @@ namespace op {
 RmsNormLayer::RmsNormLayer(base::DeviceType_t device_type, int32_t dim)
     : dim_(dim),
       LayerParam(device_type, LayerType_t::RMSNorm, false, "RMSNorm") {
-  reset_input_tensor_num(1);
+  reset_input_tensor_num(1);//单输入，一次只能处理一个token向量
   reset_output_tensor_num(1);
   reset_weight_tensor_num(1);
 }

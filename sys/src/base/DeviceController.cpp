@@ -151,12 +151,18 @@ void* GPUDeviceController::mem_alloc(size_t byte_size) {
     CHECK(cudaGetDevice(&id) == cudaSuccess);
 
     if(byte_size > THRESHOLD){
-        //需要分配大块内存
+        /**
+         * 
+         * 需要分配大块内存
+         * 
+         * 
+        */
 
         //获取该设备上的大块内存的空闲表
         auto& big_block_list = big_block_map[id];
 
         int sel_id = -1;
+        //选择合适的大块缓冲块
         for(int i =0; i<big_block_list.size(); i++){
             //若第i个大块block，仅支持分配一次byte_size, 分完变成小块
             if(big_block_list[i].byte_size >= byte_size &&
@@ -186,7 +192,12 @@ void* GPUDeviceController::mem_alloc(size_t byte_size) {
         return ptr;
     }
 
-    //小内存分配
+        /**
+         * 
+         * 需要分配小块内存
+         * 
+         * 
+        */
     auto& mini_block_list = mini_block_map[id];
     for(int i =0; i< mini_block_list.size(); i++){
         if(mini_block_list[i].byte_size >= byte_size &&

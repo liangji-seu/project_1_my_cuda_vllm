@@ -13,8 +13,8 @@ private:
     void* ptr                                          = nullptr;             // 内存地址
     size_t byte_size                                   = 0;                   // 内存大小
     DeviceType_t device_type                           = DeviceType_t::Unknown; // 内存的设备类型
-    std::shared_ptr<DeviceController> controller;                             // 设备控制器
-    bool flag_is_external                              = false;                // true:外部指定内存  false:控制器开辟内存
+    std::shared_ptr<DeviceController> controller;                             // 设备控制器基类指针
+    bool flag_is_external                              = false;                // true:外部直接指定现成内存  false:控制器开辟内存
 
 public:
     explicit Buffer() = default;

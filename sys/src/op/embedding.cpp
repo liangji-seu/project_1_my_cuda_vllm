@@ -6,12 +6,17 @@ namespace op{
 EmbeddingLayer::EmbeddingLayer(
     base::DeviceType_t device_type,
     int32_t dim,
-    int32_t seq_len,
     int32_t vocab_size)
     : dim_(dim),
-      seq_len_(seq_len),
       vocab_size_(vocab_size),
       LayerParam(device_type, LayerType_t::Embedding, false, "Embedding") {
+  
+  /**
+   * 这里输入两个原因是：
+   * input0：一维的tokenid向量，固定32个长度
+   * input1:一维的标量，表示实际有效长度=序列长度
+   * 
+   */
   reset_input_tensor_num(2);
   reset_output_tensor_num(1);
   reset_weight_tensor_num(1);

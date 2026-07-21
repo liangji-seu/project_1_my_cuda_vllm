@@ -34,7 +34,7 @@ namespace op{
      * - 运算过程
      */
     class BaseLayer{
-        //名字 + 层类型 + 数据类型 + 设备类型
+        //名字 + 层算子分类 + 处理的数据类型精度 + 工作的设备
         protected:
             std::string name;//层的名字
             LayerType_t layer_type = LayerType_t::Unknown;//xxx层
@@ -122,13 +122,13 @@ namespace op{
         protected:
             std::vector<tensor::Tensor> inputs;//输入张量组
             std::vector<tensor::Tensor> outputs;//输出张量组
-            std::shared_ptr<kernel::CudaStream> cuda_stream;//层的cuda工作流
+            std::shared_ptr<kernel::CudaStream> cuda_stream;//层的cuda工作流   //我感觉这个放到baselayer里面会更好
 
         public:
             explicit Layer(
                 base::DeviceType_t device_type,
                 LayerType_t layer_type,
-                tensor::DataType_t data_type = tensor::DataType_t::fp32,
+                tensor::DataType_t data_type = tensor::DataType_t::fp32, //我们写死默认处理fp32精度的数据
                 std::string layer_name = "default-Layer"
             );
 
@@ -223,10 +223,10 @@ namespace op{
         //除了有普通无权重的层：输入输出，流，另外多了一个
         //权重张量 + 量化张量
         protected:
-            std::vector<tensor::Tensor> weights;//权重张量
+            std::vector<tensor::Tensor> weights;//权重张量组
             bool is_quant_layer = false;        //是否是量化层
             tensor::Tensor scales;              //量化缩放张量
-            size_t group_size = 0;              //?
+            size_t group_size = 0;              //量化张量处理的分组数
 
         public:
             explicit LayerParam(
