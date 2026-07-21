@@ -72,12 +72,15 @@ class LLama2Model : public Model {
   void create_param_quant_layers() override;
 
   void attention_rms(int32_t layer_idx, const tensor::Tensor& input);
-  void attention_qkv(int32_t layer_idx, const tensor::Tensor& pos_tensor);
-  void attention_mha(int32_t layer_idx, const tensor::Tensor& pos_tensor);
+  void attention_qkv(int32_t layer_idx, int32_t pos);
+  void attention_mha(int32_t layer_idx, int32_t pos);
   void feed_forward(int32_t layer_idx, const tensor::Tensor& input);
   void cls_logits(const tensor::Tensor& input);
 
   int32_t post_processing(const tensor::Tensor& pos, bool is_prompt) override;
+
+  void transfer_to_device();
+  void set_cuda_stream_on_all_layers();
 };
 
 }  // namespace model

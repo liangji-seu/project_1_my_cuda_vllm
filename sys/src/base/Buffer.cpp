@@ -57,8 +57,9 @@ void Buffer::buffer_self_allocate() {
     CHECK(flag_is_external == false);
     if(ptr){
         controller->mem_release(ptr);
-        ptr = controller->mem_alloc(byte_size);
     }
+    ptr = controller->mem_alloc(byte_size);
+    CHECK(ptr != nullptr) << "GPU/CPU memory allocation failed for " << byte_size << " bytes";
     return;
 }
 

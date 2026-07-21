@@ -28,6 +28,13 @@ base::error::Status LLama2Model::init(base::DeviceType_t device_type) {
 
   init_mem();
 
+  // Set up CUDA stream and transfer to GPU
+  if (device_type_ == base::DeviceType_t::GPU) {
+    cuda_stream_ = std::make_shared<kernel::CudaStream>();
+    set_cuda_stream_on_all_layers();
+    transfer_to_device();
+  }
+
   sampler_ = std::make_unique<sampler::ArgmaxSampler>(device_type_);
   // sampler_ = std::make_unique<sampler::TopKSampler>(device_type_, 0.6f, 20, 0.95f);
   return base::error::Status();
@@ -42,13 +49,18 @@ base::error::Status LLama2Model::forward(const tensor::Tensor& input,
                                "The input tensor is empty.");
   }
 
+  // Extract pos value on CPU — pos_tensor stays on CPU, never goes to GPU.
+  // GPU kernels receive pos as a value (int32_t), not a device pointer.
+  int32_t pos = static_cast<const int32_t*>(pos_tensor.get_ptr())[0];
+
   for (int32_t layer_idx = 0; layer_idx < config_->layer_num_; ++layer_idx) {
     attention_rms(layer_idx, input);
-    attention_qkv(layer_idx, pos_tensor);
-    attention_mha(layer_idx, pos_tensor);
+    attention_qkv(layer_idx, pos);
+    attention_mha(layer_idx, pos);
     feed_forward(layer_idx, input);
   }
   cls_logits(input);
+
   return base::error::Status();
 }
 
@@ -415,6 +427,11 @@ op::EmbeddingOutput LLama2Model::embedding(const std::vector<int>& tokens) {
     input_embeddings.reshape({token_count, static_cast<size_t>(config_->dim_)});
   }
 
+  // Ensure input_tokens is on CPU so we can write token IDs
+  if (input_tokens.get_device_type() == base::DeviceType_t::GPU) {
+    input_tokens.to("cpu", nullptr);
+  }
+
   for (size_t i = 0; i < token_count; ++i) {
     const_cast<int32_t&>(
         static_cast<const int32_t*>(input_tokens.get_ptr())[i]) = tokens.at(i);
@@ -424,6 +441,12 @@ op::EmbeddingOutput LLama2Model::embedding(const std::vector<int>& tokens) {
   tensor::Tensor input_token_num(tensor::DataType_t::int32, {1}, true, cpu_alloc);
   *const_cast<int32_t*>(static_cast<const int32_t*>(input_token_num.get_ptr())) =
       static_cast<int32_t>(token_count);
+
+  // Transfer input data to GPU for the embedding kernel
+  if (device_type_ == base::DeviceType_t::GPU) {
+    input_tokens.to("cuda", nullptr);
+    input_token_num.to("cuda", nullptr);
+  }
 
   CHECK(llama_layers_->embedding_layer_ != nullptr);
   STATUS_CHECK(llama_layers_->embedding_layer_->forward(
@@ -442,12 +465,11 @@ void LLama2Model::attention_rms(int32_t layer_idx, const tensor::Tensor& input) 
   STATUS_CHECK(rmsnorm_layer->forward(input, rmsnorm_output));
 }
 
-void LLama2Model::attention_qkv(int32_t layer_idx, const tensor::Tensor& pos_tensor) {
+void LLama2Model::attention_qkv(int32_t layer_idx, int32_t pos) {
   CHECK(llama_layers_ != nullptr);
 
   tensor::Tensor& query = get_buffer(ModelBufferType::kQuery);
   tensor::Tensor& rmsnorm_output = get_buffer(ModelBufferType::kOutputRMSNorm);
-  int32_t pos = static_cast<const int32_t*>(pos_tensor.get_ptr())[0];
 
   auto [key, val] = slice_kv_cache(layer_idx, pos);
 
@@ -466,68 +488,67 @@ void LLama2Model::attention_qkv(int32_t layer_idx, const tensor::Tensor& pos_ten
   CHECK(value_layer != nullptr);
   STATUS_CHECK(value_layer->forward(rmsnorm_output, val));
 
-  // Q/K/V bias (optional — some models like Qwen2.5 have bias)
+  // Q/K/V bias (Qwen2.5 has bias). On GPU: copy to CPU, add, copy back.
   if (!llama_layers_->q_bias_.empty()) {
-    float* q_ptr = static_cast<float*>(query.get_ptr());
-    const float* q_bias = llama_layers_->q_bias_[layer_idx];
-    for (int32_t j = 0; j < config_->q_dim_; ++j) q_ptr[j] += q_bias[j];
-
-    float* k_ptr = static_cast<float*>(key.get_ptr());
-    const float* k_bias = llama_layers_->k_bias_[layer_idx];
-    for (int32_t j = 0; j < config_->kv_dim_; ++j) k_ptr[j] += k_bias[j];
-
-    float* v_ptr = static_cast<float*>(val.get_ptr());
-    const float* v_bias = llama_layers_->v_bias_[layer_idx];
-    for (int32_t j = 0; j < config_->kv_dim_; ++j) v_ptr[j] += v_bias[j];
+    auto add_bias = [this](tensor::Tensor& t, const float* bias, int32_t dim) {
+      if (device_type_ == base::DeviceType_t::GPU) {
+        t.to("cpu", nullptr);  // GPU→CPU
+      }
+      float* ptr = static_cast<float*>(const_cast<void*>(t.get_ptr()));
+      for (int32_t j = 0; j < dim; ++j) ptr[j] += bias[j];
+      if (device_type_ == base::DeviceType_t::GPU) {
+        t.to("cuda", nullptr);  // CPU→GPU
+      }
+    };
+    add_bias(query, llama_layers_->q_bias_[layer_idx], config_->q_dim_);
+    add_bias(key,   llama_layers_->k_bias_[layer_idx], config_->kv_dim_);
+    add_bias(val,   llama_layers_->v_bias_[layer_idx], config_->kv_dim_);
   }
 
   // Q/K normalization (Qwen3 specific, Qwen2.x skips this)
   if (!llama_layers_->q_norm_weights_.empty()) {
-    const int32_t head_size = config_->head_size_;
-    const int32_t head_num = config_->head_num_;
-    const int32_t kv_head_num = config_->kv_head_num_;
-    const float eps = 1e-6f;
-
-    // Q norm
-    float* q_ptr = static_cast<float*>(query.get_ptr());
-    const float* q_weight = llama_layers_->q_norm_weights_[layer_idx];
-    for (int32_t h = 0; h < head_num; ++h) {
-      float* head_q = q_ptr + h * head_size;
-      float sum_sq = 0.0f;
-      for (int32_t d = 0; d < head_size; ++d) {
-        sum_sq += head_q[d] * head_q[d];
+    auto add_qk_norm = [this](tensor::Tensor& t, const float* weight,
+                               int32_t head_num, int32_t head_size) {
+      if (device_type_ == base::DeviceType_t::GPU) {
+        t.to("cpu", nullptr);
       }
-      float rms = 1.0f / std::sqrt(sum_sq / static_cast<float>(head_size) + eps);
-      for (int32_t d = 0; d < head_size; ++d) {
-        head_q[d] = head_q[d] * rms * q_weight[d];
+      float* ptr = static_cast<float*>(const_cast<void*>(t.get_ptr()));
+      const float eps = 1e-6f;
+      for (int32_t h = 0; h < head_num; ++h) {
+        float* head = ptr + h * head_size;
+        float sum_sq = 0.0f;
+        for (int32_t d = 0; d < head_size; ++d) sum_sq += head[d] * head[d];
+        float rms = 1.0f / std::sqrt(sum_sq / static_cast<float>(head_size) + eps);
+        for (int32_t d = 0; d < head_size; ++d) head[d] = head[d] * rms * weight[d];
       }
-    }
-
-    // K norm
-    float* k_ptr = static_cast<float*>(key.get_ptr());
-    const float* k_weight = llama_layers_->k_norm_weights_[layer_idx];
-    for (int32_t h = 0; h < kv_head_num; ++h) {
-      float* head_k = k_ptr + h * head_size;
-      float sum_sq = 0.0f;
-      for (int32_t d = 0; d < head_size; ++d) {
-        sum_sq += head_k[d] * head_k[d];
+      if (device_type_ == base::DeviceType_t::GPU) {
+        t.to("cuda", nullptr);
       }
-      float rms = 1.0f / std::sqrt(sum_sq / static_cast<float>(head_size) + eps);
-      for (int32_t d = 0; d < head_size; ++d) {
-        head_k[d] = head_k[d] * rms * k_weight[d];
-      }
-    }
+    };
+    add_qk_norm(query, llama_layers_->q_norm_weights_[layer_idx],
+                config_->head_num_, config_->head_size_);
+    add_qk_norm(key,   llama_layers_->k_norm_weights_[layer_idx],
+                config_->kv_head_num_, config_->head_size_);
   }
 
   // RoPE
   CHECK(llama_layers_->rope_layer_ != nullptr);
   const tensor::Tensor& sin_cache = get_buffer(ModelBufferType::kSinCache);
   const tensor::Tensor& cos_cache = get_buffer(ModelBufferType::kCosCache);
-  STATUS_CHECK(llama_layers_->rope_layer_->forward(
-      query, key, pos_tensor, sin_cache, cos_cache, tensor::Tensor{}));
+
+  // Create a tensor for pos. Data stays on CPU (RoPE host code reads it
+  // before kernel launch), but device_type must match the layer's type for check_tensor.
+  {
+    auto cpu_alloc = base::CPUDeviceControllerFactory::get_instance();
+    tensor::Tensor pos_tensor_local(tensor::DataType_t::int32, {1}, true, cpu_alloc);
+    *const_cast<int32_t*>(static_cast<const int32_t*>(pos_tensor_local.get_ptr())) = pos;
+    pos_tensor_local.set_device_type(device_type_);
+    STATUS_CHECK(llama_layers_->rope_layer_->forward(
+        query, key, pos_tensor_local, sin_cache, cos_cache, tensor::Tensor{}));
+  }
 }
 
-void LLama2Model::attention_mha(int32_t layer_idx, const tensor::Tensor& pos_tensor) {
+void LLama2Model::attention_mha(int32_t layer_idx, int32_t pos) {
   CHECK(llama_layers_ != nullptr);
 
   tensor::Tensor& query = get_buffer(ModelBufferType::kQuery);
@@ -536,7 +557,6 @@ void LLama2Model::attention_mha(int32_t layer_idx, const tensor::Tensor& pos_ten
   tensor::Tensor& mha_output = get_buffer(ModelBufferType::kOutputMHA);
   tensor::Tensor& score_storage = get_buffer(ModelBufferType::kScoreStorage);
 
-  int pos = static_cast<const int32_t*>(pos_tensor.get_ptr())[0];
   const auto& mha_layer = llama_layers_->mha_layer_;
   CHECK(mha_layer != nullptr);
 
@@ -607,14 +627,100 @@ void LLama2Model::cls_logits(const tensor::Tensor& input) {
   STATUS_CHECK(llama_layers_->cls_layer_->forward(input, forward_output));
 }
 
+void LLama2Model::set_cuda_stream_on_all_layers() {
+  CHECK(llama_layers_ != nullptr);
+  CHECK(cuda_stream_ != nullptr);
+
+  auto set_stream = [this](auto& layers) {
+    for (auto& layer : layers) {
+      if (layer) layer->set_cuda_stream(cuda_stream_);
+    }
+  };
+
+  set_stream(llama_layers_->wq_layers_);
+  set_stream(llama_layers_->wk_layers_);
+  set_stream(llama_layers_->wv_layers_);
+  set_stream(llama_layers_->wo_layers_);
+  set_stream(llama_layers_->w1_layers_);
+  set_stream(llama_layers_->w2_layers_);
+  set_stream(llama_layers_->w3_layers_);
+  set_stream(llama_layers_->rmsnorm_layers_);
+
+  if (llama_layers_->cls_layer_)
+    llama_layers_->cls_layer_->set_cuda_stream(cuda_stream_);
+  if (llama_layers_->embedding_layer_)
+    llama_layers_->embedding_layer_->set_cuda_stream(cuda_stream_);
+  if (llama_layers_->rope_layer_)
+    llama_layers_->rope_layer_->set_cuda_stream(cuda_stream_);
+  if (llama_layers_->mha_layer_)
+    llama_layers_->mha_layer_->set_cuda_stream(cuda_stream_);
+  if (llama_layers_->add_layer_)
+    llama_layers_->add_layer_->set_cuda_stream(cuda_stream_);
+  if (llama_layers_->swiglu_layer_)
+    llama_layers_->swiglu_layer_->set_cuda_stream(cuda_stream_);
+}
+
+void LLama2Model::transfer_to_device() {
+  // Transfer compute buffers to GPU, but keep I/O buffers on CPU
+  // (I/O buffers are transferred explicitly at kernel boundaries)
+  for (auto& [type, tensor] : buffers_) {
+    (void)type;
+    if (type == ModelBufferType::kInputTokens ||
+        type == ModelBufferType::kInputPos) {
+      continue;  // I/O buffers: kept on CPU, transferred on demand
+    }
+    if (!tensor.is_empty() && tensor.get_device_type() == base::DeviceType_t::CPU) {
+      tensor.to("cuda", nullptr);
+    }
+  }
+
+  // Transfer all layer weights to GPU
+  if (llama_layers_) {
+    for (auto& wq : llama_layers_->wq_layers_)
+      std::dynamic_pointer_cast<op::LayerParam>(wq)->to("cuda");
+    for (auto& wk : llama_layers_->wk_layers_)
+      std::dynamic_pointer_cast<op::LayerParam>(wk)->to("cuda");
+    for (auto& wv : llama_layers_->wv_layers_)
+      std::dynamic_pointer_cast<op::LayerParam>(wv)->to("cuda");
+    for (auto& wo : llama_layers_->wo_layers_)
+      std::dynamic_pointer_cast<op::LayerParam>(wo)->to("cuda");
+    for (auto& w1 : llama_layers_->w1_layers_)
+      std::dynamic_pointer_cast<op::LayerParam>(w1)->to("cuda");
+    for (auto& w2 : llama_layers_->w2_layers_)
+      std::dynamic_pointer_cast<op::LayerParam>(w2)->to("cuda");
+    for (auto& w3 : llama_layers_->w3_layers_)
+      std::dynamic_pointer_cast<op::LayerParam>(w3)->to("cuda");
+    for (auto& rms : llama_layers_->rmsnorm_layers_)
+      std::dynamic_pointer_cast<op::LayerParam>(rms)->to("cuda");
+    if (llama_layers_->cls_layer_)
+      std::dynamic_pointer_cast<op::LayerParam>(llama_layers_->cls_layer_)->to("cuda");
+    if (llama_layers_->embedding_layer_)
+      std::dynamic_pointer_cast<op::LayerParam>(llama_layers_->embedding_layer_)->to("cuda");
+  }
+}
+
 int32_t LLama2Model::post_processing(const tensor::Tensor& pos, bool is_prompt) {
   if (is_prompt) {
     return -1;
   }
-  const tensor::Tensor& forward_output = get_buffer(ModelBufferType::kForwardOutput);
-  const float* forward_logits = static_cast<const float*>(forward_output.get_ptr());
+  tensor::Tensor& forward_output = get_buffer(ModelBufferType::kForwardOutput);
 
-  return static_cast<int32_t>(sampler_->sample(forward_logits, forward_output.get_size()));
+  // If logits are on GPU, copy to a CPU staging buffer for sampling,
+  // then transfer back to GPU for the next forward pass.
+  bool was_gpu = (forward_output.get_device_type() == base::DeviceType_t::GPU);
+  if (was_gpu) {
+    forward_output.to("cpu", nullptr);
+  }
+
+  const float* forward_logits = static_cast<const float*>(forward_output.get_ptr());
+  int32_t result = static_cast<int32_t>(
+      sampler_->sample(forward_logits, forward_output.get_size()));
+
+  if (was_gpu) {
+    forward_output.to("cuda", nullptr);
+  }
+
+  return result;
 }
 
 }  // namespace model

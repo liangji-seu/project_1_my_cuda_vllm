@@ -9,7 +9,9 @@ class CudaStream {
 public:
     cudaStream_t stream = nullptr; // cuda工作流
 
-    CudaStream()  = default;
+    CudaStream() {
+        cudaStreamCreate(&stream);
+    }
 
     ~CudaStream();
 };

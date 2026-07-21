@@ -183,10 +183,9 @@ void* GPUDeviceController::mem_alloc(size_t byte_size) {
 
         //需要大内存，且控制器的大内存块的表里面没有合适的，就只能调用cuda驱动分配
         void* ptr = nullptr;
-        if(cudaMalloc(&ptr, byte_size) != cudaSuccess){
-            LOG(ERROR) << "Error: CUDA error when allocate " << byte_size << "byte memory";
-            return nullptr;
-        }
+        cudaError_t err = cudaMalloc(&ptr, byte_size);
+        CHECK(err == cudaSuccess) << "CUDA malloc failed for " << byte_size
+                                  << " bytes: " << cudaGetErrorString(err);
         //记录下重新分配的大块占用块
         big_block_list.emplace_back(ptr, byte_size, true);
         return ptr;
@@ -208,10 +207,9 @@ void* GPUDeviceController::mem_alloc(size_t byte_size) {
            }
     }
     void*ptr = nullptr;
-    if(cudaMalloc(&ptr, byte_size) != cudaSuccess){
-        LOG(ERROR)<< "Error: CUDA error when allocate mini block";
-        return nullptr;
-    }
+    cudaError_t err = cudaMalloc(&ptr, byte_size);
+    CHECK(err == cudaSuccess) << "CUDA mini-block malloc failed for " << byte_size
+                              << " bytes: " << cudaGetErrorString(err);
     mini_block_list.emplace_back(ptr, byte_size, true);
     return ptr;
 }
