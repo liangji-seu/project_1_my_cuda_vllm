@@ -7,8 +7,8 @@
 
 #include "model/llama3.h"
 
-#define DEFAULT_MODEL_PATH   "/home/liangji/AI_INFRA/projects/my_cuda_vllm/demo/qwen3_0_6b.bin"
-#define DEFAULT_VOCAB_PATH   "/home/liangji/huggingface/Qwen3-0.6B/tokenizer.json"
+#define DEFAULT_MODEL_PATH   "/home/liangji/AI_INFRA/projects/my_cuda_vllm/demo/qwen2.5_0.5b_instruct.bin"
+#define DEFAULT_VOCAB_PATH   "/home/liangji/huggingface/Qwen2.5-0.5B-Instruct/tokenizer.json"
 
 static std::string build_chatml_prompt(const std::vector<std::string>& history) {
   // Note: encode() prepends BOS (<|im_start|>), so the prompt itself should
@@ -37,6 +37,15 @@ static std::string generate(model::LLama2Model& model, const std::string& prompt
   int32_t prompt_len = static_cast<int32_t>(tokens.size());
   LOG_IF(FATAL, tokens.empty()) << "The tokens is empty.";
 
+  // DEBUG: print prompt info
+  LOG(INFO) << "Prompt token count: " << prompt_len;
+  LOG(INFO) << "First 5 prompt tokens:";
+  for (int i = 0; i < std::min(5, prompt_len); ++i)
+    LOG(INFO) << "  [" << i << "] id=" << tokens[i] << " -> '" << model.decode(tokens[i]) << "'";
+  LOG(INFO) << "Last 5 prompt tokens:";
+  for (int i = std::max(0, prompt_len - 5); i < prompt_len; ++i)
+    LOG(INFO) << "  [" << i << "] id=" << tokens[i] << " -> '" << model.decode(tokens[i]) << "'";
+
   int32_t pos = 0;
   int32_t next = -1;
   bool is_prompt = true;
@@ -63,7 +72,11 @@ static std::string generate(model::LLama2Model& model, const std::string& prompt
       next = tokens.at(pos + 1);
     } else {
       words.push_back(next);
-      // Decode the latest token and stream to stdout
+      // DEBUG: print generated token info
+      if (words.size() <= 10) {
+        LOG(INFO) << "Gen token[" << words.size() - 1 << "] id=" << next
+                   << " -> '" << model.decode(next) << "'";
+      }
       std::string piece = model.decode(next);
       std::cout << piece << std::flush;
     }

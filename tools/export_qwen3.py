@@ -106,10 +106,19 @@ def legacy_export(model, filepath):
         serialize_fp32(out_file, layer.attention_norm.weight)
     for layer in model.layers:
         serialize_fp32(out_file, layer.attention.wq.weight)
+    if model.params.has_qkv_bias:
+        for layer in model.layers:
+            serialize_fp32(out_file, layer.attention.wq.bias)
     for layer in model.layers:
         serialize_fp32(out_file, layer.attention.wk.weight)
+    if model.params.has_qkv_bias:
+        for layer in model.layers:
+            serialize_fp32(out_file, layer.attention.wk.bias)
     for layer in model.layers:
         serialize_fp32(out_file, layer.attention.wv.weight)
+    if model.params.has_qkv_bias:
+        for layer in model.layers:
+            serialize_fp32(out_file, layer.attention.wv.bias)
     for layer in model.layers:
         serialize_fp32(out_file, layer.attention.wo.weight)
     # ffn weights
@@ -131,11 +140,12 @@ def legacy_export(model, filepath):
     if not shared_classifier:
         serialize_fp32(out_file, model.output.weight)
 
-    # Q/K normalization weights (Qwen3 specific)
-    for layer in model.layers:
-        serialize_fp32(out_file, layer.attention.q_norm.weight)
-    for layer in model.layers:
-        serialize_fp32(out_file, layer.attention.k_norm.weight)
+    # Q/K normalization weights (Qwen3 specific, Qwen2.x does not have these)
+    if model.params.has_qk_norm:
+        for layer in model.layers:
+            serialize_fp32(out_file, layer.attention.q_norm.weight)
+        for layer in model.layers:
+            serialize_fp32(out_file, layer.attention.k_norm.weight)
 
     # write to binary file
     out_file.close()
@@ -565,6 +575,7 @@ def load_hf_model(model_path):
         config.norm_eps = config_json["rms_norm_eps"]
         config.max_seq_len = config_json["max_position_embeddings"]
         config.head_dim = config_json.get("head_dim", 0)
+        config.has_qk_norm = ('qwen3' in config_json.get('model_type', ''))
     else:
         config.dim = hf_model.config.hidden_size
         config.n_layers = hf_model.config.num_hidden_layers
@@ -575,6 +586,11 @@ def load_hf_model(model_path):
         config.norm_eps = hf_model.config.rms_norm_eps
         config.max_seq_len = hf_model.config.max_position_embeddings
         config.head_dim = getattr(hf_model.config, "head_dim", 0)
+        config.has_qk_norm = ('qwen3' in getattr(hf_model.config, 'model_type', ''))
+
+    # Detect QKV bias (some models like Qwen2.5 have bias in Q/K/V projections)
+    first_q_bias = hf_dict.get('model.layers.0.self_attn.q_proj.bias')
+    config.has_qkv_bias = (first_q_bias is not None)
 
     # create a new Transformer object and set weights
     model = Transformer(config)
@@ -594,8 +610,13 @@ def load_hf_model(model_path):
         layer.attention.wk.weight = nn.Parameter(hf_dict[f'model.layers.{i}.self_attn.k_proj.weight'])
         layer.attention.wv.weight = nn.Parameter(hf_dict[f'model.layers.{i}.self_attn.v_proj.weight'])
         layer.attention.wo.weight = nn.Parameter(hf_dict[f'model.layers.{i}.self_attn.o_proj.weight'])
-        layer.attention.q_norm.weight = nn.Parameter(hf_dict[f'model.layers.{i}.self_attn.q_norm.weight'])
-        layer.attention.k_norm.weight = nn.Parameter(hf_dict[f'model.layers.{i}.self_attn.k_norm.weight'])
+        if config.has_qkv_bias:
+            layer.attention.wq.bias = nn.Parameter(hf_dict[f'model.layers.{i}.self_attn.q_proj.bias'])
+            layer.attention.wk.bias = nn.Parameter(hf_dict[f'model.layers.{i}.self_attn.k_proj.bias'])
+            layer.attention.wv.bias = nn.Parameter(hf_dict[f'model.layers.{i}.self_attn.v_proj.bias'])
+        if config.has_qk_norm:
+            layer.attention.q_norm.weight = nn.Parameter(hf_dict[f'model.layers.{i}.self_attn.q_norm.weight'])
+            layer.attention.k_norm.weight = nn.Parameter(hf_dict[f'model.layers.{i}.self_attn.k_norm.weight'])
         layer.ffn_norm.weight = nn.Parameter(hf_dict[f'model.layers.{i}.post_attention_layernorm.weight'])
         layer.feed_forward.w1.weight = nn.Parameter(hf_dict[f'model.layers.{i}.mlp.gate_proj.weight'])
         layer.feed_forward.w2.weight = nn.Parameter(hf_dict[f'model.layers.{i}.mlp.down_proj.weight'])

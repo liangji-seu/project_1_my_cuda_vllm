@@ -5,6 +5,7 @@
 #include "base/DeviceController.h"
 #include "../op/kernel/cpu/rope_kernel.h"
 #include "sampler/topk_sampler.h"
+#include "sampler/argmax_sampler.h"
 
 namespace model {
 
@@ -27,7 +28,8 @@ base::error::Status LLama2Model::init(base::DeviceType_t device_type) {
 
   init_mem();
 
-  sampler_ = std::make_unique<sampler::TopKSampler>(device_type_, 0.6f, 20, 0.95f);
+  sampler_ = std::make_unique<sampler::ArgmaxSampler>(device_type_);
+  // sampler_ = std::make_unique<sampler::TopKSampler>(device_type_, 0.6f, 20, 0.95f);
   return base::error::Status();
 }
 
@@ -108,6 +110,14 @@ void LLama2Model::create_param_layers() {
     llama_layers_->wq_layers_.push_back(wq);
     pos += config_->q_dim_ * dim;
   }
+  // Wq bias — determined by explicit FLAG, NOT file-size heuristic
+  if (config_->flags_ & FLAG_HAS_QKV_BIAS) {
+    for (int32_t i = 0; i < config_->layer_num_; ++i) {
+      llama_layers_->q_bias_.push_back(
+          static_cast<const float*>(raw_model_data_->weight(pos)));
+      pos += config_->q_dim_;
+    }
+  }
 
   // Wk layers
   for (int32_t i = 0; i < config_->layer_num_; ++i) {
@@ -117,6 +127,14 @@ void LLama2Model::create_param_layers() {
     llama_layers_->wk_layers_.push_back(wk);
     pos += config_->kv_dim_ * dim;
   }
+  // Wk bias (optional)
+  if (!llama_layers_->q_bias_.empty()) {
+    for (int32_t i = 0; i < config_->layer_num_; ++i) {
+      llama_layers_->k_bias_.push_back(
+          static_cast<const float*>(raw_model_data_->weight(pos)));
+      pos += config_->kv_dim_;
+    }
+  }
 
   // Wv layers
   for (int32_t i = 0; i < config_->layer_num_; ++i) {
@@ -125,6 +143,14 @@ void LLama2Model::create_param_layers() {
                    raw_model_data_->weight(pos), cpu_device_type);
     llama_layers_->wv_layers_.push_back(wv);
     pos += config_->kv_dim_ * dim;
+  }
+  // Wv bias (optional)
+  if (!llama_layers_->q_bias_.empty()) {
+    for (int32_t i = 0; i < config_->layer_num_; ++i) {
+      llama_layers_->v_bias_.push_back(
+          static_cast<const float*>(raw_model_data_->weight(pos)));
+      pos += config_->kv_dim_;
+    }
   }
 
   // Wo layers
@@ -169,8 +195,8 @@ void LLama2Model::create_param_layers() {
 
   // Skip final rmsnorm weight
   pos += dim;
-  // Skip freqs_cos and freqs_sin weight (each [seq_len, head_size/2] for RoPE)
-  pos += config_->seq_len_ * config_->head_size_;
+  // Skip freqs_cos and freqs_sin weight (each [seq_len, head_size] — LLaMA-style RoPE)
+  pos += 2 * config_->seq_len_ * config_->head_size_;
 
   // CLS layer
   llama_layers_->cls_layer_ =
@@ -197,8 +223,17 @@ void LLama2Model::create_param_layers() {
 
   // Skip attention QKV weights to reach FFN rmsnorm
   rmsnorm_pos += config_->layer_num_ * config_->q_dim_ * dim;    // wq
+  if (!llama_layers_->q_bias_.empty()) {
+    rmsnorm_pos += config_->layer_num_ * config_->q_dim_;         // Wq bias
+  }
   rmsnorm_pos += config_->layer_num_ * config_->kv_dim_ * dim;  // wk
+  if (!llama_layers_->q_bias_.empty()) {
+    rmsnorm_pos += config_->layer_num_ * config_->kv_dim_;        // Wk bias
+  }
   rmsnorm_pos += config_->layer_num_ * config_->kv_dim_ * dim;  // wv
+  if (!llama_layers_->q_bias_.empty()) {
+    rmsnorm_pos += config_->layer_num_ * config_->kv_dim_;        // Wv bias
+  }
   rmsnorm_pos += config_->layer_num_ * dim * config_->q_dim_;    // wo
 
   for (int32_t i = 0; i < config_->layer_num_; ++i) {
@@ -219,35 +254,41 @@ void LLama2Model::create_param_layers() {
                         raw_model_data_->weight(rmsnorm_pos), cpu_device_type);
   llama_layers_->rmsnorm_layers_.push_back(rms_final);
 
-  // Q/K normalization weights (Qwen3 specific) - appended at end of file
-  // Compute position: after CLS layer (if not shared) or after freqs_cos/sin (if shared)
-  size_t qk_norm_pos = static_cast<size_t>(dim) * config_->vocab_size_  // embedding
-      + dim * config_->layer_num_                                        // attn rmsnorm
-      + config_->layer_num_ * config_->q_dim_ * dim                      // wq
-      + config_->layer_num_ * config_->kv_dim_ * dim                     // wk
-      + config_->layer_num_ * config_->kv_dim_ * dim                     // wv
-      + config_->layer_num_ * dim * config_->q_dim_                      // wo
-      + config_->layer_num_ * dim                                        // ffn rmsnorm
-      + config_->layer_num_ * dim * hidden_dim                           // w1
-      + config_->layer_num_ * dim * hidden_dim                           // w2
-      + config_->layer_num_ * dim * hidden_dim                           // w3
-      + dim                                                              // final rmsnorm
-      + config_->seq_len_ * config_->head_size_;                        // freqs (each [seq_len, head_size/2])
+  // Q/K normalization weights — determined by explicit FLAG, NOT file-size heuristic
+  if (config_->flags_ & FLAG_HAS_QK_NORM) {
+    size_t qk_norm_pos = static_cast<size_t>(dim) * config_->vocab_size_  // embedding
+        + dim * config_->layer_num_                                        // attn rmsnorm
+        + config_->layer_num_ * config_->q_dim_ * dim                      // wq
+        + config_->layer_num_ * config_->kv_dim_ * dim                     // wk
+        + config_->layer_num_ * config_->kv_dim_ * dim                     // wv
+        + config_->layer_num_ * dim * config_->q_dim_                      // wo
+        + config_->layer_num_ * dim                                        // ffn rmsnorm
+        + config_->layer_num_ * dim * hidden_dim                           // w1
+        + config_->layer_num_ * dim * hidden_dim                           // w2
+        + config_->layer_num_ * dim * hidden_dim                           // w3
+        + dim                                                              // final rmsnorm
+        + 2 * config_->seq_len_ * config_->head_size_;                    // freqs
 
-  if (!config_->is_shared_weight_) {
-    qk_norm_pos += config_->vocab_size_ * dim;  // CLS weight
-  }
+    if (config_->flags_ & FLAG_HAS_QKV_BIAS) {
+      qk_norm_pos += config_->layer_num_ * config_->q_dim_;             // Wq bias
+      qk_norm_pos += config_->layer_num_ * config_->kv_dim_;            // Wk bias
+      qk_norm_pos += config_->layer_num_ * config_->kv_dim_;            // Wv bias
+    }
+    if (!config_->is_shared_weight_) {
+      qk_norm_pos += config_->vocab_size_ * dim;  // CLS weight
+    }
 
-  const int32_t head_size = config_->head_size_;
-  for (int32_t i = 0; i < config_->layer_num_; ++i) {
-    llama_layers_->q_norm_weights_.push_back(
-        static_cast<const float*>(raw_model_data_->weight(qk_norm_pos)));
-    qk_norm_pos += head_size;
-  }
-  for (int32_t i = 0; i < config_->layer_num_; ++i) {
-    llama_layers_->k_norm_weights_.push_back(
-        static_cast<const float*>(raw_model_data_->weight(qk_norm_pos)));
-    qk_norm_pos += head_size;
+    const int32_t head_size = config_->head_size_;
+    for (int32_t i = 0; i < config_->layer_num_; ++i) {
+      llama_layers_->q_norm_weights_.push_back(
+          static_cast<const float*>(raw_model_data_->weight(qk_norm_pos)));
+      qk_norm_pos += head_size;
+    }
+    for (int32_t i = 0; i < config_->layer_num_; ++i) {
+      llama_layers_->k_norm_weights_.push_back(
+          static_cast<const float*>(raw_model_data_->weight(qk_norm_pos)));
+      qk_norm_pos += head_size;
+    }
   }
 }
 
@@ -425,8 +466,23 @@ void LLama2Model::attention_qkv(int32_t layer_idx, const tensor::Tensor& pos_ten
   CHECK(value_layer != nullptr);
   STATUS_CHECK(value_layer->forward(rmsnorm_output, val));
 
-  // Q/K normalization (Qwen3 specific) - per-head RMSNorm
-  {
+  // Q/K/V bias (optional — some models like Qwen2.5 have bias)
+  if (!llama_layers_->q_bias_.empty()) {
+    float* q_ptr = static_cast<float*>(query.get_ptr());
+    const float* q_bias = llama_layers_->q_bias_[layer_idx];
+    for (int32_t j = 0; j < config_->q_dim_; ++j) q_ptr[j] += q_bias[j];
+
+    float* k_ptr = static_cast<float*>(key.get_ptr());
+    const float* k_bias = llama_layers_->k_bias_[layer_idx];
+    for (int32_t j = 0; j < config_->kv_dim_; ++j) k_ptr[j] += k_bias[j];
+
+    float* v_ptr = static_cast<float*>(val.get_ptr());
+    const float* v_bias = llama_layers_->v_bias_[layer_idx];
+    for (int32_t j = 0; j < config_->kv_dim_; ++j) v_ptr[j] += v_bias[j];
+  }
+
+  // Q/K normalization (Qwen3 specific, Qwen2.x skips this)
+  if (!llama_layers_->q_norm_weights_.empty()) {
     const int32_t head_size = config_->head_size_;
     const int32_t head_num = config_->head_num_;
     const int32_t kv_head_num = config_->kv_head_num_;

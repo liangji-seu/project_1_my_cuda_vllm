@@ -41,7 +41,7 @@ void rmsnorm_kernel_cuda(const tensor::Tensor& input, const tensor::Tensor& weig
   CHECK(!output.is_empty());
 
   int32_t dim = static_cast<int32_t>(input.get_size());
-  const float eps = 1e-5f;
+  const float eps = 1e-6f;  // Qwen2.5 rms_norm_eps = 1e-6
 
   // block_size: power of 2 >= dim, max 1024
   size_t block_size = 32;

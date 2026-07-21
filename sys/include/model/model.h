@@ -88,7 +88,8 @@ class Model {
 
   virtual base::error::Status gen_model_from_file();
 
-  virtual base::error::Status generate_model_infos(const ModelConfig& config) const;
+  virtual base::error::Status generate_model_infos(const ModelConfig& config,
+                                                  int32_t flags) const;
 
   virtual int32_t post_processing(const tensor::Tensor& pos, bool is_prompt) = 0;
 

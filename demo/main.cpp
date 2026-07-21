@@ -7,8 +7,8 @@
 
 #include "model/llama3.h"
 
-#define DEFAULT_MODEL_PATH "/home/liangji/AI_INFRA/projects/my_cuda_vllm/demo/qwen3_0_6b.bin"
-#define DEFAULT_VOCAB_PATH "/home/liangji/huggingface/Qwen3-0.6B/tokenizer.json"
+#define DEFAULT_MODEL_PATH "/home/liangji/AI_INFRA/projects/my_cuda_vllm/demo/qwen2.5_0.5b_instruct.bin"
+#define DEFAULT_VOCAB_PATH "/home/liangji/huggingface/Qwen2.5-0.5B-Instruct/tokenizer.json"
 #define DEFAULT_PROMPT     "请你给我介绍一下东南大学"
 
 int32_t generate(model::LLama2Model& model, const std::string& sentence,
