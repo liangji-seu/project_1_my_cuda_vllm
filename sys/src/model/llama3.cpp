@@ -92,7 +92,7 @@ void LLama2Model::create_param_layers() {
 
   // Embedding layer
   llama_layers_->embedding_layer_ = std::make_shared<op::EmbeddingLayer>(
-      device_type_, dim, config_->seq_len_, config_->vocab_size_);
+      device_type_, dim, config_->vocab_size_);
 
   const void* weight_embedding = raw_model_data_->weight(0);
   std::dynamic_pointer_cast<op::LayerParam>(llama_layers_->embedding_layer_)
