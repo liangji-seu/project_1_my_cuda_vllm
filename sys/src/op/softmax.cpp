@@ -1,6 +1,7 @@
 #include "op/softmax.h"
 #include "kernel/kernel_interface.h"
 #include <cstring>
+#include <cuda_runtime.h>
 
 namespace op {
 
@@ -28,11 +29,22 @@ base::error::Status SoftmaxLayer::forward() {
 
   kernel::get_softmax_interface(device_type)(input, stream_ptr);
 
-  // Copy result to output
+  // Copy result to output (if different buffer)
   auto output = this->get_output(0);
   if (output.get_ptr() != input.get_ptr()) {
     size_t byte_size = input.get_byte_size();
-    std::memcpy(output.get_ptr(), input.get_ptr(), byte_size);
+    if (device_type == base::DeviceType_t::GPU) {
+      cudaStream_t _stream = stream_ptr ? static_cast<cudaStream_t>(stream_ptr) : nullptr;
+      if (_stream) {
+        cudaMemcpyAsync(output.get_ptr(), input.get_ptr(), byte_size,
+                        cudaMemcpyDeviceToDevice, _stream);
+      } else {
+        cudaMemcpy(output.get_ptr(), input.get_ptr(), byte_size,
+                   cudaMemcpyDeviceToDevice);
+      }
+    } else {
+      std::memcpy(output.get_ptr(), input.get_ptr(), byte_size);
+    }
   }
   return base::error::Status();
 }

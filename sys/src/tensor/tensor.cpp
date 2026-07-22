@@ -338,16 +338,23 @@ namespace tensor{
         auto new_buffer = std::make_shared<base::Buffer>(
             new_byte_size, nullptr, base::DeviceType_t::Unknown, allocator, false);
 
-        // 逐行拷贝
+        // 逐行拷贝（通过 controller 分发，GPU 安全）
         auto* src_base = static_cast<unsigned char*>(this->buffer->get_ptr());
         auto* dst_base = static_cast<unsigned char*>(new_buffer->get_ptr());
+        auto ctrl = this->buffer->get_controller();
 
         for (size_t outer = 0; outer < outer_count; outer++) {
             size_t slice_idx = 0;
             for (size_t s = start; s < end; s += step) {
                 auto* src = src_base + outer * old_axis_byte_stride + s * inner_bytes;
                 auto* dst = dst_base + outer * new_axis_byte_stride + slice_idx * inner_bytes;
-                std::memcpy(dst, src, inner_bytes);
+                if (ctrl) {
+                    ctrl->mem_copy(src, dst, inner_bytes,
+                                   this->buffer->get_device_type(),
+                                   new_buffer->get_device_type());
+                } else {
+                    std::memcpy(dst, src, inner_bytes);
+                }
                 slice_idx++;
             }
         }
