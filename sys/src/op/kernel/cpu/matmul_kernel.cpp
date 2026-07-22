@@ -5,7 +5,8 @@
 namespace kernel {
 
 void matmul_kernel_cpu(const tensor::Tensor& input, const tensor::Tensor& weight,
-                       float scale, const tensor::Tensor& output, void* stream) {
+                       const float* bias, float scale,
+                       const tensor::Tensor& output, void* stream) {
   (void)stream;
   CHECK(!input.is_empty());
   CHECK(!weight.is_empty());
@@ -38,6 +39,15 @@ void matmul_kernel_cpu(const tensor::Tensor& input, const tensor::Tensor& weight
   arma::fmat output_mat(output_ptr, in_dim1, wei_dim0, false, true);
 
   output_mat = (input_mat * weight_mat) * scale;
+
+  // Add bias if present
+  if (bias) {
+    for (int32_t r = 0; r < in_dim1; ++r) {
+      for (int32_t c = 0; c < wei_dim0; ++c) {
+        output_ptr[r * wei_dim0 + c] += bias[c];
+      }
+    }
+  }
 }
 
 }

@@ -3,12 +3,13 @@
 
 namespace op {
 
-MatmulLayer::MatmulLayer(base::DeviceType_t device_type, float scale)
+MatmulLayer::MatmulLayer(base::DeviceType_t device_type, float scale, bool has_bias)
     : scale_(scale),
+      has_bias_(has_bias),
       LayerParam(device_type, LayerType_t::Matmul, false, "Matmul") {
-  reset_input_tensor_num(1);//一个输入张量
-  reset_output_tensor_num(1);//一个输出张量
-  reset_weight_tensor_num(1);  // 一个权重矩阵
+  reset_input_tensor_num(1);
+  reset_output_tensor_num(1);
+  reset_weight_tensor_num(has_bias ? 2 : 1);  // weight[0]=W, weight[1]=bias
 }
 
 base::error::Status MatmulLayer::check_layer() {
@@ -25,13 +26,18 @@ base::error::Status MatmulLayer::forward() {
   auto weight = this->get_weight(0);
   auto output = this->get_output(0);
 
+  const float* bias = nullptr;
+  if (has_bias_ && !get_weight(1).is_empty()) {
+    bias = static_cast<const float*>(get_weight(1).get_ptr());
+  }
+
   void* stream_ptr = nullptr;
   if (device_type == base::DeviceType_t::GPU) {
     CHECK(cuda_stream != nullptr);
     stream_ptr = cuda_stream->stream;
   }
 
-  kernel::get_matmul_interface(device_type)(input, weight, scale_, output, stream_ptr);
+  kernel::get_matmul_interface(device_type)(input, weight, bias, scale_, output, stream_ptr);
   return base::error::Status();
 }
 

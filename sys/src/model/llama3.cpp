@@ -119,53 +119,55 @@ void LLama2Model::create_param_layers() {
   // Skip embedding weight: vocab_size * dim, plus rmsnorm weights before QKV
   size_t pos = static_cast<size_t>(dim) * config_->vocab_size_ + dim * config_->layer_num_;
 
-  // Wq layers
+  bool has_bias = (config_->flags_ & FLAG_HAS_QKV_BIAS) != 0;
+
+  // Wq layers (with optional bias)
   for (int32_t i = 0; i < config_->layer_num_; ++i) {
-    auto wq = std::make_shared<op::MatmulLayer>(device_type_);
+    auto wq = std::make_shared<op::MatmulLayer>(device_type_, 1.0f, has_bias);
     wq->set_weight(0, {static_cast<size_t>(config_->q_dim_), static_cast<size_t>(dim)},
                    raw_model_data_->weight(pos), cpu_device_type);
     llama_layers_->wq_layers_.push_back(wq);
     pos += config_->q_dim_ * dim;
   }
-  // Wq bias — determined by explicit FLAG, NOT file-size heuristic
-  if (config_->flags_ & FLAG_HAS_QKV_BIAS) {
+  if (has_bias) {
     for (int32_t i = 0; i < config_->layer_num_; ++i) {
-      llama_layers_->q_bias_.push_back(
-          static_cast<const float*>(raw_model_data_->weight(pos)));
+      auto wq = std::static_pointer_cast<op::MatmulLayer>(llama_layers_->wq_layers_[i]);
+      wq->set_weight(1, {static_cast<size_t>(config_->q_dim_)},
+                     raw_model_data_->weight(pos), cpu_device_type);
       pos += config_->q_dim_;
     }
   }
 
-  // Wk layers
+  // Wk layers (with optional bias)
   for (int32_t i = 0; i < config_->layer_num_; ++i) {
-    auto wk = std::make_shared<op::MatmulLayer>(device_type_);
+    auto wk = std::make_shared<op::MatmulLayer>(device_type_, 1.0f, has_bias);
     wk->set_weight(0, {static_cast<size_t>(config_->kv_dim_), static_cast<size_t>(dim)},
                    raw_model_data_->weight(pos), cpu_device_type);
     llama_layers_->wk_layers_.push_back(wk);
     pos += config_->kv_dim_ * dim;
   }
-  // Wk bias (optional)
-  if (!llama_layers_->q_bias_.empty()) {
+  if (has_bias) {
     for (int32_t i = 0; i < config_->layer_num_; ++i) {
-      llama_layers_->k_bias_.push_back(
-          static_cast<const float*>(raw_model_data_->weight(pos)));
+      auto wk = std::static_pointer_cast<op::MatmulLayer>(llama_layers_->wk_layers_[i]);
+      wk->set_weight(1, {static_cast<size_t>(config_->kv_dim_)},
+                     raw_model_data_->weight(pos), cpu_device_type);
       pos += config_->kv_dim_;
     }
   }
 
-  // Wv layers
+  // Wv layers (with optional bias)
   for (int32_t i = 0; i < config_->layer_num_; ++i) {
-    auto wv = std::make_shared<op::MatmulLayer>(device_type_);
+    auto wv = std::make_shared<op::MatmulLayer>(device_type_, 1.0f, has_bias);
     wv->set_weight(0, {static_cast<size_t>(config_->kv_dim_), static_cast<size_t>(dim)},
                    raw_model_data_->weight(pos), cpu_device_type);
     llama_layers_->wv_layers_.push_back(wv);
     pos += config_->kv_dim_ * dim;
   }
-  // Wv bias (optional)
-  if (!llama_layers_->q_bias_.empty()) {
+  if (has_bias) {
     for (int32_t i = 0; i < config_->layer_num_; ++i) {
-      llama_layers_->v_bias_.push_back(
-          static_cast<const float*>(raw_model_data_->weight(pos)));
+      auto wv = std::static_pointer_cast<op::MatmulLayer>(llama_layers_->wv_layers_[i]);
+      wv->set_weight(1, {static_cast<size_t>(config_->kv_dim_)},
+                     raw_model_data_->weight(pos), cpu_device_type);
       pos += config_->kv_dim_;
     }
   }
@@ -240,15 +242,15 @@ void LLama2Model::create_param_layers() {
 
   // Skip attention QKV weights to reach FFN rmsnorm
   rmsnorm_pos += config_->layer_num_ * config_->q_dim_ * dim;    // wq
-  if (!llama_layers_->q_bias_.empty()) {
+  if (has_bias) {
     rmsnorm_pos += config_->layer_num_ * config_->q_dim_;         // Wq bias
   }
   rmsnorm_pos += config_->layer_num_ * config_->kv_dim_ * dim;  // wk
-  if (!llama_layers_->q_bias_.empty()) {
+  if (has_bias) {
     rmsnorm_pos += config_->layer_num_ * config_->kv_dim_;        // Wk bias
   }
   rmsnorm_pos += config_->layer_num_ * config_->kv_dim_ * dim;  // wv
-  if (!llama_layers_->q_bias_.empty()) {
+  if (has_bias) {
     rmsnorm_pos += config_->layer_num_ * config_->kv_dim_;        // Wv bias
   }
   rmsnorm_pos += config_->layer_num_ * dim * config_->q_dim_;    // wo
@@ -505,35 +507,8 @@ void LLama2Model::attention_qkv(int32_t layer_idx, int32_t pos) {
   CHECK(value_layer != nullptr);
   STATUS_CHECK(value_layer->forward(rmsnorm_output, val));
 
-  // Q/K/V bias (Qwen2.5 has bias).
-  // On GPU: use CPU staging buffer + mem_copy to update data in-place.
-  // Must NOT use t.to("cpu")/t.to("cuda") — those replace the tensor's buffer,
-  // which for key/val (local copies from slice_kv_cache) means the new buffer
-  // is NOT the key_cache/value_cache, so MHA reads stale un-biased K/V.
-  if (!llama_layers_->q_bias_.empty()) {
-    auto add_bias = [this](tensor::Tensor& t, const float* bias, int32_t dim) {
-      if (device_type_ == base::DeviceType_t::GPU) {
-        size_t byte_size = dim * sizeof(float);
-        auto cpu_alloc = base::CPUDeviceControllerFactory::get_instance();
-        auto cpu_buf = std::make_shared<base::Buffer>(
-            byte_size, nullptr, base::DeviceType_t::Unknown, cpu_alloc, false);
-        auto cu_alloc = base::GPUDeviceControllerFactory::get_instance();
-        void* gpu_ptr = const_cast<void*>(t.get_ptr());
-        cu_alloc->mem_copy(gpu_ptr, cpu_buf->get_ptr(), byte_size,
-                           base::DeviceType_t::GPU, base::DeviceType_t::CPU);
-        float* ptr = static_cast<float*>(cpu_buf->get_ptr());
-        for (int32_t j = 0; j < dim; ++j) ptr[j] += bias[j];
-        cu_alloc->mem_copy(cpu_buf->get_ptr(), gpu_ptr, byte_size,
-                           base::DeviceType_t::CPU, base::DeviceType_t::GPU);
-      } else {
-        float* ptr = static_cast<float*>(const_cast<void*>(t.get_ptr()));
-        for (int32_t j = 0; j < dim; ++j) ptr[j] += bias[j];
-      }
-    };
-    add_bias(query, llama_layers_->q_bias_[layer_idx], config_->q_dim_);
-    add_bias(key,   llama_layers_->k_bias_[layer_idx], config_->kv_dim_);
-    add_bias(val,   llama_layers_->v_bias_[layer_idx], config_->kv_dim_);
-  }
+  // Bias is now fused into the MatmulLayer itself — Wq/Wk/Wv forward()
+  // already added bias, so query/key/val are fully computed at this point.
 
   // Q/K normalization (Qwen3 specific, Qwen2.x skips this).
   // Same pattern: CPU staging buffer + mem_copy, not to().

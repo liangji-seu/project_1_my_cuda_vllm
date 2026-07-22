@@ -4,7 +4,8 @@
 namespace kernel {
 
 void matmul_kernel_cpu(const tensor::Tensor& input, const tensor::Tensor& weight,
-                       float scale, const tensor::Tensor& output,
+                       const float* bias, float scale,
+                       const tensor::Tensor& output,
                        void* stream = nullptr);
 
 }

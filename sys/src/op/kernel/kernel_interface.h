@@ -86,10 +86,11 @@ typedef void (*RMSNorm_backend)(
 RMSNorm_backend get_rmsnorm_interface(base::DeviceType_t device_type);
 
 
-//矩阵乘
+//矩阵乘（bias 可选，nullptr 表示无 bias）
 typedef void (*Matmul_backend)(
     const tensor::Tensor& x,
     const tensor::Tensor& w,
+    const float* bias,
     float scale,
     const tensor::Tensor& y,
     void* stream
