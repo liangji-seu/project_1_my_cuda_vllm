@@ -2,6 +2,7 @@
 
 #include <glog/logging.h>
 
+#include "base/Buffer.h"
 #include "base/DeviceController.h"
 #include "../op/kernel/cpu/rope_kernel.h"
 #include "sampler/topk_sampler.h"
@@ -504,16 +505,29 @@ void LLama2Model::attention_qkv(int32_t layer_idx, int32_t pos) {
   CHECK(value_layer != nullptr);
   STATUS_CHECK(value_layer->forward(rmsnorm_output, val));
 
-  // Q/K/V bias (Qwen2.5 has bias). On GPU: copy to CPU, add, copy back.
+  // Q/K/V bias (Qwen2.5 has bias).
+  // On GPU: use CPU staging buffer + mem_copy to update data in-place.
+  // Must NOT use t.to("cpu")/t.to("cuda") — those replace the tensor's buffer,
+  // which for key/val (local copies from slice_kv_cache) means the new buffer
+  // is NOT the key_cache/value_cache, so MHA reads stale un-biased K/V.
   if (!llama_layers_->q_bias_.empty()) {
     auto add_bias = [this](tensor::Tensor& t, const float* bias, int32_t dim) {
       if (device_type_ == base::DeviceType_t::GPU) {
-        t.to("cpu", nullptr);  // GPU→CPU
-      }
-      float* ptr = static_cast<float*>(const_cast<void*>(t.get_ptr()));
-      for (int32_t j = 0; j < dim; ++j) ptr[j] += bias[j];
-      if (device_type_ == base::DeviceType_t::GPU) {
-        t.to("cuda", nullptr);  // CPU→GPU
+        size_t byte_size = dim * sizeof(float);
+        auto cpu_alloc = base::CPUDeviceControllerFactory::get_instance();
+        auto cpu_buf = std::make_shared<base::Buffer>(
+            byte_size, nullptr, base::DeviceType_t::Unknown, cpu_alloc, false);
+        auto cu_alloc = base::GPUDeviceControllerFactory::get_instance();
+        void* gpu_ptr = const_cast<void*>(t.get_ptr());
+        cu_alloc->mem_copy(gpu_ptr, cpu_buf->get_ptr(), byte_size,
+                           base::DeviceType_t::GPU, base::DeviceType_t::CPU);
+        float* ptr = static_cast<float*>(cpu_buf->get_ptr());
+        for (int32_t j = 0; j < dim; ++j) ptr[j] += bias[j];
+        cu_alloc->mem_copy(cpu_buf->get_ptr(), gpu_ptr, byte_size,
+                           base::DeviceType_t::CPU, base::DeviceType_t::GPU);
+      } else {
+        float* ptr = static_cast<float*>(const_cast<void*>(t.get_ptr()));
+        for (int32_t j = 0; j < dim; ++j) ptr[j] += bias[j];
       }
     };
     add_bias(query, llama_layers_->q_bias_[layer_idx], config_->q_dim_);
@@ -521,27 +535,41 @@ void LLama2Model::attention_qkv(int32_t layer_idx, int32_t pos) {
     add_bias(val,   llama_layers_->v_bias_[layer_idx], config_->kv_dim_);
   }
 
-  //多了一个q,k向量的qknorm
-  // Q/K normalization (Qwen3 specific, Qwen2.x skips this)
+  // Q/K normalization (Qwen3 specific, Qwen2.x skips this).
+  // Same pattern: CPU staging buffer + mem_copy, not to().
   if (!llama_layers_->q_norm_weights_.empty()) {
-    //定义了一个lambda函数
     auto add_qk_norm = [this](tensor::Tensor& t, const float* weight,
                                int32_t head_num, int32_t head_size) {
-      //还拷贝到cpu上来算
       if (device_type_ == base::DeviceType_t::GPU) {
-        t.to("cpu", nullptr);
-      }
-      float* ptr = static_cast<float*>(const_cast<void*>(t.get_ptr()));
-      const float eps = 1e-6f;
-      for (int32_t h = 0; h < head_num; ++h) {
-        float* head = ptr + h * head_size;
-        float sum_sq = 0.0f;
-        for (int32_t d = 0; d < head_size; ++d) sum_sq += head[d] * head[d];
-        float rms = 1.0f / std::sqrt(sum_sq / static_cast<float>(head_size) + eps);
-        for (int32_t d = 0; d < head_size; ++d) head[d] = head[d] * rms * weight[d];
-      }
-      if (device_type_ == base::DeviceType_t::GPU) {
-        t.to("cuda", nullptr);
+        size_t byte_size = static_cast<size_t>(head_num) * head_size * sizeof(float);
+        auto cpu_alloc = base::CPUDeviceControllerFactory::get_instance();
+        auto cpu_buf = std::make_shared<base::Buffer>(
+            byte_size, nullptr, base::DeviceType_t::Unknown, cpu_alloc, false);
+        auto cu_alloc = base::GPUDeviceControllerFactory::get_instance();
+        void* gpu_ptr = const_cast<void*>(t.get_ptr());
+        cu_alloc->mem_copy(gpu_ptr, cpu_buf->get_ptr(), byte_size,
+                           base::DeviceType_t::GPU, base::DeviceType_t::CPU);
+        float* ptr = static_cast<float*>(cpu_buf->get_ptr());
+        const float eps = 1e-6f;
+        for (int32_t h = 0; h < head_num; ++h) {
+          float* head = ptr + h * head_size;
+          float sum_sq = 0.0f;
+          for (int32_t d = 0; d < head_size; ++d) sum_sq += head[d] * head[d];
+          float rms = 1.0f / std::sqrt(sum_sq / static_cast<float>(head_size) + eps);
+          for (int32_t d = 0; d < head_size; ++d) head[d] = head[d] * rms * weight[d];
+        }
+        cu_alloc->mem_copy(cpu_buf->get_ptr(), gpu_ptr, byte_size,
+                           base::DeviceType_t::CPU, base::DeviceType_t::GPU);
+      } else {
+        float* ptr = static_cast<float*>(const_cast<void*>(t.get_ptr()));
+        const float eps = 1e-6f;
+        for (int32_t h = 0; h < head_num; ++h) {
+          float* head = ptr + h * head_size;
+          float sum_sq = 0.0f;
+          for (int32_t d = 0; d < head_size; ++d) sum_sq += head[d] * head[d];
+          float rms = 1.0f / std::sqrt(sum_sq / static_cast<float>(head_size) + eps);
+          for (int32_t d = 0; d < head_size; ++d) head[d] = head[d] * rms * weight[d];
+        }
       }
     };
     add_qk_norm(query, llama_layers_->q_norm_weights_[layer_idx],
