@@ -11,6 +11,7 @@
 #include "op/embedding.h"
 #include "op/encode.h"
 #include "op/layer.h"
+#include "profile/profiler.h"
 #include "raw_model_data.h"
 #include "sampler/sampler.h"
 #include "tensor/tensor.h"
@@ -41,6 +42,9 @@ class Model {
 
   std::map<ModelBufferType, tensor::Tensor> buffers_;//张量内存 + cache内存（提前分配张量内存）
   std::unique_ptr<sampler::Sampler> sampler_;//采样器
+
+  // Optional profiler for benchmark/layer-profiling (not owned)
+  profile::Profiler* profiler_ = nullptr;
 
  public:
   explicit Model(base::TokenizerType tokenizer_type, base::ModelType model_type,
@@ -74,6 +78,10 @@ class Model {
   // Buffer and KV Cache
   virtual tensor::Tensor& get_buffer(ModelBufferType buffer_idx);
   virtual const tensor::Tensor& get_buffer(ModelBufferType buffer_idx) const;
+
+  // Profiler access (set by demo/benchmark for optional profiling)
+  void set_profiler(profile::Profiler* p) { profiler_ = p; }
+  profile::Profiler* profiler() const { return profiler_; }
 
   virtual std::pair<tensor::Tensor, tensor::Tensor> slice_kv_cache(
       int32_t layer_idx, int32_t token_pos) const;

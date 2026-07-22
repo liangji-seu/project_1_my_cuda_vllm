@@ -16,3 +16,12 @@ models/
 bin/
 __pycache__/
 demo/*.bak
+
+# Profiling outputs
+profile/nsys/*.nsys-rep
+profile/nsys/*.sqlite
+profile/ncu/*.ncu-rep
+profile/ncu/*.csv
+profile/results/**/*.csv
+profile/results/**/*.json
+profile/results/**/*.txt

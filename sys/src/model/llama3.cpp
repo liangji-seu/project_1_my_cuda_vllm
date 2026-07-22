@@ -4,6 +4,7 @@
 
 #include "base/Buffer.h"
 #include "base/DeviceController.h"
+#include "profile/nvtx_utils.h"
 #include "../op/kernel/cpu/rope_kernel.h"
 #include "sampler/topk_sampler.h"
 #include "sampler/argmax_sampler.h"
@@ -55,16 +56,105 @@ base::error::Status LLama2Model::forward(const tensor::Tensor& input,
   }
 
   // Extract pos value on CPU — pos_tensor stays on CPU, never goes to GPU.
-  // GPU kernels receive pos as a value (int32_t), not a device pointer.
   int32_t pos = static_cast<const int32_t*>(pos_tensor.get_ptr())[0];
 
+  bool layer_prof = (profiler_ && profiler_->layer_profile_enabled());
+  cudaStream_t stream = cuda_stream_ ? cuda_stream_->stream : nullptr;
+  const std::string stage = (pos < 1) ? "prefill" : "decode";
+
   for (int32_t layer_idx = 0; layer_idx < config_->layer_num_; ++layer_idx) {
-    attention_rms(layer_idx, input);
-    attention_qkv(layer_idx, pos);
-    attention_mha(layer_idx, pos);
-    feed_forward(layer_idx, input);
+    NVTX_RANGE(("transformer_layer_" + std::to_string(layer_idx)).c_str());
+
+    // ---- input_rmsnorm ----
+    if (layer_prof) {
+      cudaEvent_t ev_start, ev_stop;
+      cudaEventCreate(&ev_start);
+      cudaEventCreate(&ev_stop);
+      cudaEventRecord(ev_start, stream);
+      attention_rms(layer_idx, input);
+      cudaEventRecord(ev_stop, stream);
+      cudaEventSynchronize(ev_stop);
+      float ms = 0;
+      cudaEventElapsedTime(&ms, ev_start, ev_stop);
+      cudaEventDestroy(ev_start);
+      cudaEventDestroy(ev_stop);
+      profiler_->add_layer_record("input_rmsnorm", stage, layer_idx, ms);
+    } else {
+      attention_rms(layer_idx, input);
+    }
+
+    // ---- qkv_projection (includes RoPE + KV cache write + optional QK norm) ----
+    if (layer_prof) {
+      cudaEvent_t ev_start, ev_stop;
+      cudaEventCreate(&ev_start);
+      cudaEventCreate(&ev_stop);
+      cudaEventRecord(ev_start, stream);
+      attention_qkv(layer_idx, pos);
+      cudaEventRecord(ev_stop, stream);
+      cudaEventSynchronize(ev_stop);
+      float ms = 0;
+      cudaEventElapsedTime(&ms, ev_start, ev_stop);
+      cudaEventDestroy(ev_start);
+      cudaEventDestroy(ev_stop);
+      profiler_->add_layer_record("qkv_projection", stage, layer_idx, ms);
+    } else {
+      attention_qkv(layer_idx, pos);
+    }
+
+    // ---- attention (MHA + Wo projection) ----
+    if (layer_prof) {
+      cudaEvent_t ev_start, ev_stop;
+      cudaEventCreate(&ev_start);
+      cudaEventCreate(&ev_stop);
+      cudaEventRecord(ev_start, stream);
+      attention_mha(layer_idx, pos);
+      cudaEventRecord(ev_stop, stream);
+      cudaEventSynchronize(ev_stop);
+      float ms = 0;
+      cudaEventElapsedTime(&ms, ev_start, ev_stop);
+      cudaEventDestroy(ev_start);
+      cudaEventDestroy(ev_stop);
+      profiler_->add_layer_record("attention", stage, layer_idx, ms);
+    } else {
+      attention_mha(layer_idx, pos);
+    }
+
+    // ---- feed_forward (FFN rmsnorm + gate/up/swiglu/down + residuals) ----
+    if (layer_prof) {
+      cudaEvent_t ev_start, ev_stop;
+      cudaEventCreate(&ev_start);
+      cudaEventCreate(&ev_stop);
+      cudaEventRecord(ev_start, stream);
+      feed_forward(layer_idx, input);
+      cudaEventRecord(ev_stop, stream);
+      cudaEventSynchronize(ev_stop);
+      float ms = 0;
+      cudaEventElapsedTime(&ms, ev_start, ev_stop);
+      cudaEventDestroy(ev_start);
+      cudaEventDestroy(ev_stop);
+      profiler_->add_layer_record("mlp", stage, layer_idx, ms);
+    } else {
+      feed_forward(layer_idx, input);
+    }
   }
-  cls_logits(input);
+
+  // ---- final_rmsnorm + lm_head ----
+  if (layer_prof) {
+    cudaEvent_t ev_start, ev_stop;
+    cudaEventCreate(&ev_start);
+    cudaEventCreate(&ev_stop);
+    cudaEventRecord(ev_start, stream);
+    cls_logits(input);
+    cudaEventRecord(ev_stop, stream);
+    cudaEventSynchronize(ev_stop);
+    float ms = 0;
+    cudaEventElapsedTime(&ms, ev_start, ev_stop);
+    cudaEventDestroy(ev_start);
+    cudaEventDestroy(ev_stop);
+    profiler_->add_layer_record("final_rmsnorm+lm_head", stage, -1, ms);
+  } else {
+    cls_logits(input);
+  }
 
   return base::error::Status();
 }
@@ -433,6 +523,7 @@ base::error::Status LLama2Model::create_layers() {
 
 //执行embedding推理
 op::EmbeddingOutput LLama2Model::embedding(const std::vector<int>& tokens) {
+  NVTX_RANGE("embedding");
   auto& input_tokens = get_buffer(ModelBufferType::kInputTokens);
   auto& input_embeddings = get_buffer(ModelBufferType::kInputEmbeddings);
 
@@ -474,6 +565,7 @@ op::EmbeddingOutput LLama2Model::embedding(const std::vector<int>& tokens) {
 
 //执行rmsnorm算子
 void LLama2Model::attention_rms(int32_t layer_idx, const tensor::Tensor& input) {
+  NVTX_RANGE(("input_rmsnorm_L" + std::to_string(layer_idx)).c_str());
   CHECK(llama_layers_ != nullptr);
 
   tensor::Tensor& rmsnorm_output = get_buffer(ModelBufferType::kOutputRMSNorm);
@@ -485,6 +577,7 @@ void LLama2Model::attention_rms(int32_t layer_idx, const tensor::Tensor& input) 
 
 //执行qkv投影计算
 void LLama2Model::attention_qkv(int32_t layer_idx, int32_t pos) {
+  NVTX_RANGE(("qkv_projection_L" + std::to_string(layer_idx)).c_str());
   CHECK(llama_layers_ != nullptr);
 
   tensor::Tensor& query = get_buffer(ModelBufferType::kQuery);
@@ -575,6 +668,7 @@ void LLama2Model::attention_qkv(int32_t layer_idx, int32_t pos) {
 
 
 void LLama2Model::attention_mha(int32_t layer_idx, int32_t pos) {
+  NVTX_RANGE(("attention_L" + std::to_string(layer_idx)).c_str());
   CHECK(llama_layers_ != nullptr);
 
   tensor::Tensor& query = get_buffer(ModelBufferType::kQuery);
@@ -599,6 +693,7 @@ void LLama2Model::attention_mha(int32_t layer_idx, int32_t pos) {
 }
 
 void LLama2Model::feed_forward(int32_t layer_idx, const tensor::Tensor& input) {
+  NVTX_RANGE(("mlp_L" + std::to_string(layer_idx)).c_str());
   CHECK(llama_layers_ != nullptr);
 
   // Residual add: input = input + attn_output
@@ -640,6 +735,7 @@ void LLama2Model::feed_forward(int32_t layer_idx, const tensor::Tensor& input) {
 }
 
 void LLama2Model::cls_logits(const tensor::Tensor& input) {
+  NVTX_RANGE("final_rmsnorm+lm_head");
   CHECK(llama_layers_ != nullptr);
 
   const auto& norm = llama_layers_->rmsnorm_layers_.at(2 * config_->layer_num_);
