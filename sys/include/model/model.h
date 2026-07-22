@@ -17,25 +17,30 @@
 
 namespace model {
 
+/**
+ * 抽象模型的基类
+ */
 class Model {
  protected:
+  //量化相关
   int32_t group_size_ = 1;
   bool is_quant_model_ = false;
 
+  //基础信息
   base::DeviceType_t device_type_ = base::DeviceType_t::Unknown;
   base::ModelType model_type_ = base::ModelType::kModelTypeUnknown;
 
-  std::unique_ptr<op::EncodeLayerBase> encode_layer_;
-  std::unique_ptr<TransformerConfig> config_;
+  std::unique_ptr<op::EncodeLayerBase> encode_layer_;//分词器层
+  std::unique_ptr<TransformerConfig> config_;//模型超参
 
-  std::string model_path_;
-  std::shared_ptr<RawModelData> raw_model_data_;
+  std::string model_path_;//模型参数权重
+  std::shared_ptr<RawModelData> raw_model_data_;//权重文件
 
-  std::string token_path_;
-  base::TokenizerType tokenizer_type_ = base::TokenizerType::kEncodeUnknown;
+  std::string token_path_;//词表文件
+  base::TokenizerType tokenizer_type_ = base::TokenizerType::kEncodeUnknown;//分词器类型
 
-  std::map<ModelBufferType, tensor::Tensor> buffers_;
-  std::unique_ptr<sampler::Sampler> sampler_;
+  std::map<ModelBufferType, tensor::Tensor> buffers_;//张量内存 + cache内存（提前分配张量内存）
+  std::unique_ptr<sampler::Sampler> sampler_;//采样器
 
  public:
   explicit Model(base::TokenizerType tokenizer_type, base::ModelType model_type,
@@ -84,6 +89,7 @@ class Model {
 
   virtual base::error::Status read_model_file();
 
+  //构造一个分词器类对象实例
   virtual base::error::Status create_encode_layer();
 
   virtual base::error::Status gen_model_from_file();

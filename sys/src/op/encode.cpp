@@ -45,6 +45,7 @@ BpeEncodeLayer::BpeEncodeLayer(std::string token_model_path, bool has_bos, bool 
     encoder[key] = id;
   }
 
+  //默认的特殊tokens
   bos_id_ = special_tokens["<|begin_of_text|>"];
   eos_id_ = special_tokens["<|end_of_text|>"];
   stop_token1_ = eos_id_;
@@ -61,6 +62,7 @@ std::vector<int32_t> BpeEncodeLayer::encode(const std::string& sentence) const {
   std::string s = absl::StrReplaceAll(sentence, replacements);
   auto input_ids = this->tiktoken_->encode(s);
 
+  //构造好主动添加tokenid的bos, eos
   if (has_bos_) {
     input_ids.insert(input_ids.begin(), bos_id_);
   }
@@ -107,7 +109,7 @@ QwenEncodeLayer::QwenEncodeLayer(std::string token_model_path, bool has_bos, boo
     LOG(FATAL) << "Failed to parse token model JSON: " << token_model_path_;
   }
 
-  const auto& datas = data["added_tokens"];
+  const auto& datas = data["added_tokens"];//特殊词
   ankerl::unordered_dense::map<std::string, int> special_tokens;
   for (const auto& data1 : datas) {
     int id = data1["id"];

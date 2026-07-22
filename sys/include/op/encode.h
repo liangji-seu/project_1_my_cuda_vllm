@@ -48,12 +48,13 @@ public:
 #if defined(LLAMA3_SUPPORT) || defined(QWEN3_SUPPORT)
 class BpeEncodeLayer : public EncodeLayerBase {
 protected:
+  //推理框架本身需要独立使用的几个特殊token，所以要单独存储在类里面，其余的交给tiktoken来编解码
   int32_t bos_id_ = -1;
   int32_t eos_id_ = -1;
   int32_t stop_token1_ = -1;
   int32_t stop_token2_ = -1;
-  int32_t num_token_ = 0;
-  std::unique_ptr<tiktoken::tiktoken> tiktoken_;
+  int32_t num_token_ = 0;//词表大小, 等于普通token数 + 特殊token数
+  std::unique_ptr<tiktoken::tiktoken> tiktoken_;//tiktone引擎
 
 
 

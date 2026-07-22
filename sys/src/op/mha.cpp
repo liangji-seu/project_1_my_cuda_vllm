@@ -18,8 +18,8 @@ MultiHeadAttentionLayer::MultiHeadAttentionLayer(
       seq_len_(seq_len),
       head_num_(head_num),
       head_size_(head_size) {
-  reset_input_tensor_num(5);
-  reset_output_tensor_num(1);
+  reset_input_tensor_num(5);//q向量，score分数矩阵，kcache矩阵，vcache矩阵
+  reset_output_tensor_num(1);//v_q注意力输出向量
 }
 
 void MultiHeadAttentionLayer::set_pos(int32_t pos) { pos_ = pos; }

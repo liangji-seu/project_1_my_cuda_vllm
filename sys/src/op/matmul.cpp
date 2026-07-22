@@ -6,9 +6,9 @@ namespace op {
 MatmulLayer::MatmulLayer(base::DeviceType_t device_type, float scale)
     : scale_(scale),
       LayerParam(device_type, LayerType_t::Matmul, false, "Matmul") {
-  reset_input_tensor_num(1);
-  reset_output_tensor_num(1);
-  reset_weight_tensor_num(1);  // W
+  reset_input_tensor_num(1);//一个输入张量
+  reset_output_tensor_num(1);//一个输出张量
+  reset_weight_tensor_num(1);  // 一个权重矩阵
 }
 
 base::error::Status MatmulLayer::check_layer() {

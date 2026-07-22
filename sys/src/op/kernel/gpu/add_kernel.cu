@@ -44,7 +44,7 @@ namespace kernel{
         CHECK(size== y.get_size());
 
 
-        //开始规划thread资源
+        //开始规划thread资源，一个thread负责一个输出元素
         size_t block_size = 512; //512 threads / block
         size_t grid_size = (size + block_size - 1) / block_size; //能覆盖size的thread
 

@@ -22,6 +22,7 @@ const std::string& Model::token_path() const { return token_path_; }
 
 const std::string& Model::model_path() const { return model_path_; }
 
+//增加一个张量的内存缓冲区索引统计
 base::error::Status Model::insert_buffer(ModelBufferType buffer_idx,
                                          const tensor::Tensor& tensor) {
   if (buffers_.count(buffer_idx) > 0) {
@@ -37,6 +38,8 @@ base::error::Status Model::insert_buffer(ModelBufferType buffer_idx,
   return base::error::Status();
 }
 
+
+//直接获取
 tensor::Tensor& Model::get_buffer(ModelBufferType buffer_idx) {
   CHECK_GT(buffers_.count(buffer_idx), 0) << static_cast<int>(buffer_idx);
   return buffers_.at(buffer_idx);
@@ -66,6 +69,7 @@ base::error::Status Model::read_model_file() {
                                "Failed to open the file. The path may be invalid.");
   }
 
+  //从.bin里面读取初版的配置
   auto config = ModelConfig{};
   if (fread(&config, sizeof(ModelConfig), 1, file) != 1) {
     return base::error::Status(base::error::kModelParseError,
@@ -94,6 +98,7 @@ base::error::Status Model::read_model_file() {
     return gen_status;
   }
 
+  //根据量化需要，用不同精度的方式来读取权重内存
   if (!is_quant_model_) {
     raw_model_data_ = std::make_shared<RawModelDataFp32>();
   } else {
@@ -109,6 +114,7 @@ base::error::Status Model::read_model_file() {
   raw_model_data_->file_size = sb.st_size;
   raw_model_data_->fd = fd;
 
+  //开始内存映射mmap
   raw_model_data_->data =
       mmap(nullptr, raw_model_data_->file_size, PROT_READ, MAP_PRIVATE, fd, 0);
 
@@ -153,8 +159,12 @@ base::error::Status Model::generate_model_infos(const ModelConfig& config,
   return base::error::Status();
 }
 
+
+
+//开始创建分词器无参层
 base::error::Status Model::create_encode_layer() {
 #if defined(QWEN3_SUPPORT)
+  //创建独占指针指向的一个分词器层类对象实例
   encode_layer_ = std::make_unique<op::QwenEncodeLayer>(token_path_, true, false);
 #elif defined(LLAMA3_SUPPORT)
   encode_layer_ = std::make_unique<op::BpeEncodeLayer>(token_path_, true, false);
@@ -186,6 +196,7 @@ base::error::Status Model::gen_model_from_file() {
     return mmap_status;
   }
 
+  //按照配置需要，构造所有的算子层类对象实例
   auto layer_create_status = create_layers();
   if (!layer_create_status) {
     LOG(ERROR) << "Create layers for the model file " << model_path_ << " failed!";
@@ -215,6 +226,7 @@ std::string Model::decode(const std::vector<int32_t>& token_idxs) const {
   return encode_layer_->decode(token_idxs);
 }
 
+//直接开始访问kvcache，所以，kvcache的张量内存区域，是要手动事先分配的，应该是在create_layer里面，子类实现
 std::pair<tensor::Tensor, tensor::Tensor> Model::slice_kv_cache(
     int32_t layer_idx, int32_t token_pos) const {
   int32_t layer_offset = layer_idx * config_->seq_len_ * config_->kv_dim_;
@@ -240,7 +252,7 @@ std::pair<tensor::Tensor, tensor::Tensor> Model::slice_kv_cache(
 tensor::Tensor Model::fill_input(const tensor::Tensor& pos_tensor,
                                  const op::EmbeddingOutput& embedding_output,
                                  bool is_prompt) const {
-  const int32_t pos = static_cast<const int32_t*>(pos_tensor.get_ptr())[0];
+  const int32_t pos = static_cast<const int32_t*>(pos_tensor.get_ptr())[0];//当前的位置
 
   auto [input_tokens, input_embeddings, input_token_num] = embedding_output;
 
@@ -249,11 +261,12 @@ tensor::Tensor Model::fill_input(const tensor::Tensor& pos_tensor,
     index = pos;
   }
 
+  //构造一个输入给decoder-block的输入张量
   tensor::Tensor input(tensor::DataType_t::fp32, {static_cast<size_t>(config_->dim_)},
                        false, nullptr,
                        const_cast<float*>(
                            static_cast<const float*>(input_embeddings.get_ptr()) +
-                           index * config_->dim_));
+                           index * config_->dim_));//直接在内存里面做index个向量偏移
   input.set_device_type(device_type_);
   return input;
 }

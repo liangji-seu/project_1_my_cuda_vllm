@@ -9,7 +9,7 @@ RoPELayer::RoPELayer(base::DeviceType_t device_type, int32_t dim, int32_t kv_dim
       kv_dim_(kv_dim),
       head_size_(head_size),
       Layer(device_type, LayerType_t::RoPe, tensor::DataType_t::fp32, "RoPE") {
-  reset_input_tensor_num(5);  // Q, K, pos, sin_cache, cos_cache
+  reset_input_tensor_num(5);  // Q, K, pos, sin_cache, cos_cache//cache的长度是上下文长度的向量
   reset_output_tensor_num(1);
 }
 

@@ -1,4 +1,8 @@
 技术栈：
 完成内容：
-    1. 基于c++17/c++14，cuda构建Qwen模型的完整推理框架，基于RAII思想，依次设计并实现：内存控制器，Buffer层，Tensor层Op算子层，Model模型层。使用mmap映射磁盘的权重文件到内存，并基于预先分配的中间输入输出张量和KVcache，实现Qwen2.5-0.5B-Instruct模型的流式问答推理。并构建整体推理框架的评估流程，在单卡4090，50G的服务器下实现26tokens/s的吞吐量。
-    2. 性能分析：
+    1. 基于c++17/c++14，cuda构建Qwen模型的完整推理框架，基于RAII思想，依次设计并实现：内存控制器，Buffer层，Tensor层Op算子层，Model模型层。使用mmap映射磁盘的权重文件到内存，并基于预先分配的中间输入输出张量和KVcache，实现Qwen2.5-0.5B-Instruct模型的流式问答推理。并构建整体推理框架的评估流程，在单卡4090，50G的服务器下实现70tokens/s的吞吐量。
+性能优化：
+（profile, Nsight compute定位性能瓶颈）
+    1. 实现paged attention, 构建显存池
+    2. 优化各个算子性能
+    3. 量化

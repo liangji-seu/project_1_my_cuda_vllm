@@ -43,8 +43,15 @@ struct LLama2Layers {
   std::vector<const float*> v_bias_;  // [kv_dim] per layer
 };
 
+
+
+
+/**
+ * 模型子类
+ */
 class LLama2Model : public Model {
  private:
+ //补充上具体的层算子实例
   std::shared_ptr<kernel::CudaStream> cuda_stream_;
   std::unique_ptr<LLama2Layers> llama_layers_;
 

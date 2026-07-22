@@ -27,10 +27,11 @@ __global__ void swiglu_kernel_cuda_fp32(int32_t size, const float* in1,
 
 void swiglu_kernel_cuda(const tensor::Tensor& input1, const tensor::Tensor& input2,
                         const tensor::Tensor& output, void* stream) {
-  CHECK(!input1.is_empty());
-  CHECK(!input2.is_empty());
+  CHECK(!input1.is_empty());//W_gate输出的gate向量
+  CHECK(!input2.is_empty());//W_up输出的up向量
   CHECK(!output.is_empty());
 
+  //一个thread负责一个输出元素的计算
   int32_t size = static_cast<int32_t>(input1.get_size());
   int32_t threads = 128;
   int32_t blocks = (size + threads - 1) / threads;

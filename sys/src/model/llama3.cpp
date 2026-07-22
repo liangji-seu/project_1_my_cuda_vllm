@@ -21,11 +21,14 @@ base::error::Status LLama2Model::init(base::DeviceType_t device_type) {
 
   device_type_ = device_type;
 
+//模型超参config_在基类方法里面读出来
   auto read_status = gen_model_from_file();
   if (!read_status) {
     return read_status;
   }
 
+  
+  //在cpu测分配好内存空间（输入输出张量+cache）
   init_mem();
 
   // Set up CUDA stream and transfer to GPU
@@ -35,6 +38,7 @@ base::error::Status LLama2Model::init(base::DeviceType_t device_type) {
     transfer_to_device();
   }
 
+  //构造采样器实例
   sampler_ = std::make_unique<sampler::ArgmaxSampler>(device_type_);
   // sampler_ = std::make_unique<sampler::TopKSampler>(device_type_, 0.6f, 20, 0.95f);
   return base::error::Status();
@@ -391,6 +395,8 @@ void LLama2Model::init_mem() {
   CHECK(insert_buffer(ModelBufferType::kForwardOutput, forward_output));
 }
 
+
+//构造所有算子层实例
 base::error::Status LLama2Model::create_layers() {
   if (!llama_layers_) {
     llama_layers_ = std::make_unique<LLama2Layers>();
@@ -417,6 +423,12 @@ base::error::Status LLama2Model::create_layers() {
   return base::error::Status();
 }
 
+
+
+
+
+
+//执行embedding推理
 op::EmbeddingOutput LLama2Model::embedding(const std::vector<int>& tokens) {
   auto& input_tokens = get_buffer(ModelBufferType::kInputTokens);
   auto& input_embeddings = get_buffer(ModelBufferType::kInputEmbeddings);
@@ -456,6 +468,8 @@ op::EmbeddingOutput LLama2Model::embedding(const std::vector<int>& tokens) {
   return output;
 }
 
+
+//执行rmsnorm算子
 void LLama2Model::attention_rms(int32_t layer_idx, const tensor::Tensor& input) {
   CHECK(llama_layers_ != nullptr);
 
@@ -465,6 +479,8 @@ void LLama2Model::attention_rms(int32_t layer_idx, const tensor::Tensor& input) 
   STATUS_CHECK(rmsnorm_layer->forward(input, rmsnorm_output));
 }
 
+
+//执行qkv投影计算
 void LLama2Model::attention_qkv(int32_t layer_idx, int32_t pos) {
   CHECK(llama_layers_ != nullptr);
 
@@ -505,10 +521,13 @@ void LLama2Model::attention_qkv(int32_t layer_idx, int32_t pos) {
     add_bias(val,   llama_layers_->v_bias_[layer_idx], config_->kv_dim_);
   }
 
+  //多了一个q,k向量的qknorm
   // Q/K normalization (Qwen3 specific, Qwen2.x skips this)
   if (!llama_layers_->q_norm_weights_.empty()) {
+    //定义了一个lambda函数
     auto add_qk_norm = [this](tensor::Tensor& t, const float* weight,
                                int32_t head_num, int32_t head_size) {
+      //还拷贝到cpu上来算
       if (device_type_ == base::DeviceType_t::GPU) {
         t.to("cpu", nullptr);
       }
@@ -547,6 +566,10 @@ void LLama2Model::attention_qkv(int32_t layer_idx, int32_t pos) {
         query, key, pos_tensor_local, sin_cache, cos_cache, tensor::Tensor{}));
   }
 }
+
+
+
+
 
 void LLama2Model::attention_mha(int32_t layer_idx, int32_t pos) {
   CHECK(llama_layers_ != nullptr);
