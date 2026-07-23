@@ -12,6 +12,7 @@
 #include "gpu/emb_kernel.cuh"
 #include "gpu/rmsnorm_kernel.cuh"
 #include "gpu/matmul_kernel.cuh"
+#include "gpu/matmul_kernel_optimized.cuh"
 #include "gpu/swiglu_kernel.cuh"
 #include "gpu/softmax_kernel.cuh"
 #include "gpu/rope_kernel.cuh"
@@ -61,7 +62,7 @@ Matmul_backend get_matmul_interface(base::DeviceType_t device_type){
     if(device_type == base::DeviceType_t::CPU){
         return matmul_kernel_cpu;
     } else if(device_type == base::DeviceType_t::GPU){
-        return matmul_kernel_cuda;
+        return matmul_kernel_cuda_optimized;
     } else {
         LOG(ERROR)<<"error device type";
         return nullptr;
