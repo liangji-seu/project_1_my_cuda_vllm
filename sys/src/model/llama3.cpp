@@ -762,7 +762,7 @@ void LLama2Model::feed_forward(int32_t layer_idx, const tensor::Tensor& input) {
 void LLama2Model::cls_logits(const tensor::Tensor& input) {
   std::string phase = is_prefill_phase_ ? "prefill" + std::to_string(current_forward_pos_)
                                         : "decode"  + std::to_string(current_forward_pos_);
-  std::string label = nvtx_context_ + "/" + phase + "/lm_head";
+  std::string label = nvtx_context_ + "/" + phase + "/cls_logits";
   uint32_t c = is_prefill_phase_ ? profile::nvtx_color::kPrefill : profile::nvtx_color::kDecode;
   NVTX_RANGE_C(label.c_str(), c);
   CHECK(llama_layers_ != nullptr);
