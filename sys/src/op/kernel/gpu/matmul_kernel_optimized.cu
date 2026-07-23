@@ -1,4 +1,5 @@
 #include "matmul_kernel_optimized.cuh"
+#include "matmul_kernel.cuh"
 #include <glog/logging.h>
 #include <cuda_runtime.h>
 
@@ -265,6 +266,10 @@ matmul_kernel_tiled(int M, int N, int K,
 }
 
 // ═══ 对外接口 ═══
+// 自动选择策略:
+//   - M >= BM (128): 使用 tiled kernel, GPU 有足够 block 来饱和 SM
+//   - M <  BM:      回退到 basic kernel (一个 block 一个输出元素),
+//                    用大量 block 弥补 M 维度过小导致的 SM 空闲
 void matmul_kernel_cuda_optimized(const tensor::Tensor& input,
                                    const tensor::Tensor& weight,
                                    const float* bias, float scale,
@@ -285,6 +290,14 @@ void matmul_kernel_cuda_optimized(const tensor::Tensor& input,
 
   CHECK_EQ(static_cast<int32_t>(input.get_dim(input.get_dims_size() - 1)), K)
       << "Input last dim must equal weight inner dim";
+
+  // 当 M 小于 BM 时，tiled kernel 的 grid 只有 1 行 block，
+  // GPU SM 利用率极低 (例如 M=1 时只有 ceil(N/128) 个 block)。
+  // 此时 basic kernel 的 M*N block 能更好饱和 GPU。
+  if (M < BM) {
+    matmul_kernel_cuda(input, weight, bias, scale, output, stream);
+    return;
+  }
 
   dim3 block(NUM_THREADS);
   dim3 grid((N + BN - 1) / BN, (M + BM - 1) / BM);
