@@ -50,6 +50,11 @@ class LLama2Model : public Model {
   std::shared_ptr<kernel::CudaStream> cuda_stream_;
   std::unique_ptr<LLama2Layers> llama_layers_;
 
+  // NVTX context prefix for profiling labels
+  std::string nvtx_context_;
+  int32_t current_forward_pos_ = 0;
+  bool is_prefill_phase_ = false;
+
  public:
   explicit LLama2Model(base::TokenizerType tokenizer_type, std::string token_path,
                        std::string model_path, bool is_quant_model);
@@ -65,6 +70,10 @@ class LLama2Model : public Model {
                               int& next) override;
 
   op::EmbeddingOutput embedding(const std::vector<int>& tokens) override;
+
+  // NVTX context label, set by benchmark/demo before each run.
+  // e.g. "warmup1/prefill", "run3/decode"
+  void set_nvtx_context(const std::string& label) { nvtx_context_ = label; }
 
  private:
   void init_mem() override;

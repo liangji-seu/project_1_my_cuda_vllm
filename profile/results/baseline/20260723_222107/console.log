@@ -1,0 +1,41 @@
+Prompt token count: 50
+Warmup (3 iterations)...
+Benchmark (10 iterations)...
+  Run 1/10 — 128 tokens, 1706.6 ms
+  Run 2/10 — 128 tokens, 1706.5 ms
+  Run 3/10 — 128 tokens, 1706.9 ms
+  Run 4/10 — 128 tokens, 1706.7 ms
+  Run 5/10 — 128 tokens, 1706.7 ms
+  Run 6/10 — 128 tokens, 1706.6 ms
+  Run 7/10 — 128 tokens, 1706.4 ms
+  Run 8/10 — 128 tokens, 1706.8 ms
+  Run 9/10 — 128 tokens, 1706.6 ms
+  Run 10/10 — 128 tokens, 1706.6 ms
+
+==================================================
+Inference Benchmark
+==================================================
+Model:        /home/liangji/AI_INFRA/projects/my_cuda_vllm/demo/qwen2.5_0.5b_instruct.bin
+GPU:          NVIDIA GeForce RTX 4090
+Precision:    fp32
+Prompt tokens:50
+Output tokens:128
+Warmup:       3
+Repeat:       10
+
+Model load:           1665.63 ms
+TTFT model-only:       335.38 ms
+TTFT end-to-end:       335.55 ms
+Prefill:               335.38 ms
+Prefill throughput:    149.09 tok/s
+Decode:               1370.86 ms
+TPOT:                   10.79 ms
+Decode throughput:      92.64 tok/s
+E2E latency:          1706.63 ms
+E2E throughput:         75.00 tok/s
+Peak GPU memory:         4183 MB
+
+ITL P50/P90/P95/P99: 17.35 / 22.42 / 22.99 / 23.53 ms
+==================================================
+
+Results written to: profile/results/baseline/20260723_222107/results.json
