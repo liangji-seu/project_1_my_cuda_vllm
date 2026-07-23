@@ -57,13 +57,19 @@ base::error::Status LLama2Model::forward(const tensor::Tensor& input,
 
   // Extract pos value on CPU — pos_tensor stays on CPU, never goes to GPU.
   int32_t pos = static_cast<const int32_t*>(pos_tensor.get_ptr())[0];
+  current_forward_pos_ = pos;
+  uint32_t nvtx_color = is_prefill_phase_ ? profile::nvtx_color::kPrefill
+                                          : profile::nvtx_color::kDecode;
+  std::string phase = is_prefill_phase_ ? "prefill" + std::to_string(pos)
+                                        : "decode"  + std::to_string(pos);
 
   bool layer_prof = (profiler_ && profiler_->layer_profile_enabled());
   cudaStream_t stream = cuda_stream_ ? cuda_stream_->stream : nullptr;
   const std::string stage = (pos < 1) ? "prefill" : "decode";
 
   for (int32_t layer_idx = 0; layer_idx < config_->layer_num_; ++layer_idx) {
-    NVTX_RANGE(("transformer_layer_" + std::to_string(layer_idx)).c_str());
+    std::string layer_label = nvtx_context_ + "/" + phase + "/L" + std::to_string(layer_idx);
+    NVTX_RANGE_C(layer_label.c_str(), nvtx_color);
 
     // ---- input_rmsnorm ----
     if (layer_prof) {
@@ -162,6 +168,7 @@ base::error::Status LLama2Model::forward(const tensor::Tensor& input,
 base::error::Status LLama2Model::predict(const tensor::Tensor& input,
                                          const tensor::Tensor& pos_tensor,
                                          bool is_prompt, int& next) {
+  is_prefill_phase_ = is_prompt;
   auto status = forward(input, pos_tensor, next);
   if (!status) {
     return status;
@@ -523,7 +530,8 @@ base::error::Status LLama2Model::create_layers() {
 
 //执行embedding推理
 op::EmbeddingOutput LLama2Model::embedding(const std::vector<int>& tokens) {
-  NVTX_RANGE("embedding");
+  std::string label = nvtx_context_ + "/embedding";
+  NVTX_RANGE_C(label.c_str(), profile::nvtx_color::kDefault);
   auto& input_tokens = get_buffer(ModelBufferType::kInputTokens);
   auto& input_embeddings = get_buffer(ModelBufferType::kInputEmbeddings);
 
@@ -565,7 +573,11 @@ op::EmbeddingOutput LLama2Model::embedding(const std::vector<int>& tokens) {
 
 //执行rmsnorm算子
 void LLama2Model::attention_rms(int32_t layer_idx, const tensor::Tensor& input) {
-  NVTX_RANGE(("input_rmsnorm_L" + std::to_string(layer_idx)).c_str());
+  std::string phase = is_prefill_phase_ ? "prefill" + std::to_string(current_forward_pos_)
+                                        : "decode"  + std::to_string(current_forward_pos_);
+  std::string label = nvtx_context_ + "/" + phase + "/L" + std::to_string(layer_idx) + "/rmsnorm";
+  uint32_t c = is_prefill_phase_ ? profile::nvtx_color::kPrefill : profile::nvtx_color::kDecode;
+  NVTX_RANGE_C(label.c_str(), c);
   CHECK(llama_layers_ != nullptr);
 
   tensor::Tensor& rmsnorm_output = get_buffer(ModelBufferType::kOutputRMSNorm);
@@ -577,7 +589,11 @@ void LLama2Model::attention_rms(int32_t layer_idx, const tensor::Tensor& input) 
 
 //执行qkv投影计算
 void LLama2Model::attention_qkv(int32_t layer_idx, int32_t pos) {
-  NVTX_RANGE(("qkv_projection_L" + std::to_string(layer_idx)).c_str());
+  std::string phase = is_prefill_phase_ ? "prefill" + std::to_string(pos)
+                                        : "decode"  + std::to_string(pos);
+  std::string label = nvtx_context_ + "/" + phase + "/L" + std::to_string(layer_idx) + "/qkv";
+  uint32_t c = is_prefill_phase_ ? profile::nvtx_color::kPrefill : profile::nvtx_color::kDecode;
+  NVTX_RANGE_C(label.c_str(), c);
   CHECK(llama_layers_ != nullptr);
 
   tensor::Tensor& query = get_buffer(ModelBufferType::kQuery);
@@ -668,7 +684,12 @@ void LLama2Model::attention_qkv(int32_t layer_idx, int32_t pos) {
 
 
 void LLama2Model::attention_mha(int32_t layer_idx, int32_t pos) {
-  NVTX_RANGE(("attention_L" + std::to_string(layer_idx)).c_str());
+  (void)pos;
+  std::string phase = is_prefill_phase_ ? "prefill" + std::to_string(current_forward_pos_)
+                                        : "decode"  + std::to_string(current_forward_pos_);
+  std::string label = nvtx_context_ + "/" + phase + "/L" + std::to_string(layer_idx) + "/attn";
+  uint32_t c = is_prefill_phase_ ? profile::nvtx_color::kPrefill : profile::nvtx_color::kDecode;
+  NVTX_RANGE_C(label.c_str(), c);
   CHECK(llama_layers_ != nullptr);
 
   tensor::Tensor& query = get_buffer(ModelBufferType::kQuery);
@@ -693,7 +714,11 @@ void LLama2Model::attention_mha(int32_t layer_idx, int32_t pos) {
 }
 
 void LLama2Model::feed_forward(int32_t layer_idx, const tensor::Tensor& input) {
-  NVTX_RANGE(("mlp_L" + std::to_string(layer_idx)).c_str());
+  std::string phase = is_prefill_phase_ ? "prefill" + std::to_string(current_forward_pos_)
+                                        : "decode"  + std::to_string(current_forward_pos_);
+  std::string label = nvtx_context_ + "/" + phase + "/L" + std::to_string(layer_idx) + "/mlp";
+  uint32_t c = is_prefill_phase_ ? profile::nvtx_color::kPrefill : profile::nvtx_color::kDecode;
+  NVTX_RANGE_C(label.c_str(), c);
   CHECK(llama_layers_ != nullptr);
 
   // Residual add: input = input + attn_output
@@ -735,7 +760,11 @@ void LLama2Model::feed_forward(int32_t layer_idx, const tensor::Tensor& input) {
 }
 
 void LLama2Model::cls_logits(const tensor::Tensor& input) {
-  NVTX_RANGE("final_rmsnorm+lm_head");
+  std::string phase = is_prefill_phase_ ? "prefill" + std::to_string(current_forward_pos_)
+                                        : "decode"  + std::to_string(current_forward_pos_);
+  std::string label = nvtx_context_ + "/" + phase + "/lm_head";
+  uint32_t c = is_prefill_phase_ ? profile::nvtx_color::kPrefill : profile::nvtx_color::kDecode;
+  NVTX_RANGE_C(label.c_str(), c);
   CHECK(llama_layers_ != nullptr);
 
   const auto& norm = llama_layers_->rmsnorm_layers_.at(2 * config_->layer_num_);

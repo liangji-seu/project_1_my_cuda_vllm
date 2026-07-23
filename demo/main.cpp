@@ -267,6 +267,19 @@ static std::vector<int32_t> generate(
   return words;
 }
 
+
+
+
+
+
+
+
+
+
+
+
+
+
 // ============================================================
 // Print human-readable benchmark summary
 // ============================================================
@@ -386,6 +399,7 @@ int main(int argc, char* argv[]) {
     printf("Warmup (%d iterations)...\n", args.warmup);
     fflush(stdout);
     for (int i = 0; i < args.warmup; ++i) {
+      model.set_nvtx_context("W" + std::to_string(i + 1));
       generate(model, prompt_text, args.max_new_tokens, profiler.get(),
                false, false);
     }
@@ -401,6 +415,7 @@ int main(int argc, char* argv[]) {
   for (int i = 0; i < args.repeat; ++i) {
     printf("  Run %d/%d", i + 1, args.repeat);
     fflush(stdout);
+    model.set_nvtx_context("R" + std::to_string(i + 1));
     generate(model, prompt_text, args.max_new_tokens, profiler.get(),
              false, true);
     const auto& last_run = profiler->runs().back();
