@@ -37,3 +37,19 @@ ITL P99:              23.53 ms
     1. 实现paged attention, 构建显存池
     2. 优化各个算子性能
     3. 量化
+
+
+
+huggingface的脚本对比baseLine
+                     C++ (my_cuda_vllm)        PyTorch HF
+───────────────────────────────────────────────────────────
+Precision            FP32                       FP32
+Prompt tokens         50                          33 (*tokenizer实现差异)
+Output tokens        128                          128
+Warmup/Repeat          3/10                       3/10
+───────────────────────────────────────────────────────────
+Model load            1665.63 ms                  827.75 ms
+E2E latency           1706.63 ms                  879.25 ms
+TPOT                    10.79 ms                    6.87 ms
+E2E throughput          75.00 tok/s                145.58 tok/s
+Peak GPU mem            4183 MB                    1900 MB
