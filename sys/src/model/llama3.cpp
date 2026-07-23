@@ -571,6 +571,39 @@ op::EmbeddingOutput LLama2Model::embedding(const std::vector<int>& tokens) {
   return output;
 }
 
+// 零拷贝 embedding: token_id 已经由 post_processing 直接写入 GPU kInputTokens
+// 跳过 embedding() 中的 GPU→CPU→GPU 来回拷贝
+op::EmbeddingOutput LLama2Model::embed_next_token(int32_t token_id) {
+  auto& input_tokens = get_buffer(ModelBufferType::kInputTokens);
+  auto& input_embeddings = get_buffer(ModelBufferType::kInputEmbeddings);
+
+  // 确保 shape 正确 (单 token)
+  if (input_tokens.get_size() != 1) {
+    input_tokens.reshape({1});
+  }
+  if (input_embeddings.get_dim(0) != 1 ||
+      static_cast<int32_t>(input_embeddings.get_dim(1)) != config_->dim_) {
+    input_embeddings.reshape({1, static_cast<size_t>(config_->dim_)});
+  }
+
+  // token 已在 GPU kInputTokens 中 (由 post_processing 写入), 无需拷贝
+
+  auto cpu_alloc = base::CPUDeviceControllerFactory::get_instance();
+  tensor::Tensor input_token_num(tensor::DataType_t::int32, {1}, true, cpu_alloc);
+  *const_cast<int32_t*>(static_cast<const int32_t*>(input_token_num.get_ptr())) = 1;
+
+  if (device_type_ == base::DeviceType_t::GPU) {
+    input_token_num.to("cuda", nullptr);
+  }
+
+  CHECK(llama_layers_->embedding_layer_ != nullptr);
+  STATUS_CHECK(llama_layers_->embedding_layer_->forward(
+      input_tokens, input_token_num, input_embeddings));
+
+  (void)token_id;  // 仅用于 CPU 参考显示, GPU 侧已由 post_processing 写入
+  op::EmbeddingOutput output(input_tokens, input_embeddings, input_token_num);
+  return output;
+}
 
 //执行rmsnorm算子
 void LLama2Model::attention_rms(int32_t layer_idx, const tensor::Tensor& input) {
@@ -858,12 +891,20 @@ int32_t LLama2Model::post_processing(const tensor::Tensor& pos, bool is_prompt) 
   tensor::Tensor& forward_output = get_buffer(ModelBufferType::kForwardOutput);
 
   if (forward_output.get_device_type() == base::DeviceType_t::GPU) {
-    // GPU argmax: 直接在GPU上找最大值索引, 只拷贝 8 字节结果
-    // 消除原来 152K floats (607KB) 的 GPU→CPU→GPU 来回拷贝
+    // 零拷贝闭环: GPU argmax → token_id 直接写入 GPU kInputTokens buffer
+    // CPU 侧异步拷贝 (不 sync), 利用 demo 循环中的 cudaEventSynchronize 自然同步
+    auto& input_tokens = get_buffer(ModelBufferType::kInputTokens);
+    if (input_tokens.get_size() != 1) {
+      input_tokens.reshape({1});
+    }
+    int32_t* token_gpu = const_cast<int32_t*>(
+        static_cast<const int32_t*>(input_tokens.get_ptr()));
+
     const float* logits_gpu = static_cast<const float*>(forward_output.get_ptr());
-    return static_cast<int32_t>(
-        sampler::gpu_argmax(logits_gpu, forward_output.get_size(),
-                            cuda_stream_ ? cuda_stream_->stream : nullptr));
+    sampler::gpu_argmax_async(logits_gpu, forward_output.get_size(),
+                              token_gpu, &async_next_token_,
+                              cuda_stream_ ? cuda_stream_->stream : nullptr);
+    return async_next_token_;
   }
 
   // CPU fallback

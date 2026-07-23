@@ -206,8 +206,15 @@ static std::vector<int32_t> generate(
       profiler->set_cpu_start();
       if (timer_decode_step) timer_decode_step->record_start();
 
-      tokens = std::vector<int32_t>{next};
-      const auto& token_embedding = model.embedding(tokens);
+      // 首个 decode step: 从 CPU prefill token 过渡, 走 embedding(tokens)
+      // 后续 decode steps: token 已在 GPU (post_processing 闭环写入), 走 embed_next_token 零拷贝
+      op::EmbeddingOutput token_embedding;
+      if (first_decode) {
+        tokens = std::vector<int32_t>{next};
+        token_embedding = model.embedding(tokens);
+      } else {
+        token_embedding = model.embed_next_token(next);
+      }
       tensor::Tensor input = model.fill_input(pos_tensor, token_embedding, is_prompt);
       model.predict(input, pos_tensor, is_prompt, next);
 

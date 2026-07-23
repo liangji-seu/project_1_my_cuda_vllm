@@ -71,6 +71,12 @@ class LLama2Model : public Model {
 
   op::EmbeddingOutput embedding(const std::vector<int>& tokens) override;
 
+  // 零拷贝: token_id 已在 GPU kInputTokens 中, 直接做 embedding lookup
+  op::EmbeddingOutput embed_next_token(int32_t token_id);
+
+  // GPU argmax 异步结果暂存区 (在 post_processing 中异步写入)
+  int32_t async_next_token_ = 0;
+
   // NVTX context label, set by benchmark/demo before each run.
   // e.g. "warmup1/prefill", "run3/decode"
   void set_nvtx_context(const std::string& label) { nvtx_context_ = label; }

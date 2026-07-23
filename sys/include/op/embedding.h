@@ -10,6 +10,8 @@ struct EmbeddingOutput {
   tensor::Tensor input_embeddings;//2维输出张量，token向量组
   tensor::Tensor input_token_num;//有几个token向量
 
+  EmbeddingOutput() = default;
+
   explicit EmbeddingOutput(tensor::Tensor input_tokens,
                            tensor::Tensor input_embeddings,
                            tensor::Tensor input_token_num)
