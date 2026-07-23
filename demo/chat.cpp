@@ -131,7 +131,6 @@ static std::vector<int32_t> generate_tokens(
 
     if (is_prompt) {
       next = tokens.at(pos + 1);
-      words.push_back(next);
     } else {
       words.push_back(next);
     }

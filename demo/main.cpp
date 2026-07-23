@@ -17,8 +17,8 @@
 // ============================================================
 #define DEFAULT_MODEL_PATH "/home/liangji/AI_INFRA/projects/my_cuda_vllm/demo/qwen2.5_0.5b_instruct.bin"
 #define DEFAULT_VOCAB_PATH "/home/liangji/huggingface/Qwen2.5-0.5B-Instruct/tokenizer.json"
-#define DEFAULT_PROMPT     "请你给我介绍一下东南大学"
-
+//#define DEFAULT_PROMPT     "请从大语言模型推理系统的角度，系统分析一个基于 C++ 和 CUDA 从零实现的自回归推理框架。该框架目前支持 Qwen2.5-0.5B-Instruct，已经完成模型权重加载、Tokenizer、Embedding、RMSNorm、RoPE、KV Cache、Multi-Head Attention、SwiGLU、线性投影、LM Head 和贪心采样，并能够在单张 RTX 4090 上完成连续文本生成。框架使用 RAII 管理资源，通过 Buffer、Tensor、Operator、Layer 和 Model 等模块组织代码，权重文件通过 mmap 映射到 CPU 虚拟地址空间，再复制到 GPU 显存。模型的中间张量和 KV Cache 在初始化阶段预先分配，推理过程分为 prefill 和 decode 两个阶段。当前框架使用 FP32 计算，batch size 为 1。性能测试发现，decode 阶段的每个输出 token 耗时约为数毫秒。Nsight Systems 显示，矩阵乘和注意力 kernel 占据了大部分 GPU kernel 执行时间，同时推理过程中还存在 cudaMemcpy、cudaMalloc、cudaFree 和 CPU-GPU 同步操作。LM Head 会生成完整词表大小的 logits，之后将 logits 从 GPU 拷贝到 CPU，再由 CPU 完成 argmax 采样。部分临时 Tensor 在设备转换时会重新创建 Buffer，并通过智能指针析构旧 Buffer，这可能引入额外的显存申请和释放开销。请分别从端到端指标、运行时调度、显存管理、数据传输、算子实现和模型结构六个方面分析该框架可能存在的性能瓶颈。首先解释 TTFT、TPOT、prefill throughput、decode throughput 和端到端延迟分别反映什么问题。然后说明如何使用 Nsight Systems 判断 CPU-GPU 同步、kernel launch、显存申请释放和数据搬运是否成为瓶颈，以及如何使用 Nsight Compute 分析矩阵乘和注意力 kernel 的计算吞吐、显存带宽、缓存命中率、occupancy 和 warp stall。最后，请给出一个分阶段的优化路线"
+#define DEFAULT_PROMPT "你给我讲一个小红帽的故事"
 // ============================================================
 // CLI argument parsing (no third-party deps)
 // ============================================================
@@ -37,6 +37,7 @@ struct CliArgs {
   bool profile = false;
   bool greedy = true;
   bool no_stream_output = false;
+  bool no_early_stop = false;
 };
 
 static void print_usage(const char* prog) {
@@ -55,6 +56,7 @@ static void print_usage(const char* prog) {
   printf("  --profile               Alias for --benchmark\n");
   printf("  --greedy                Use greedy decoding (default)\n");
   printf("  --no-stream-output      Suppress per-token output in benchmark\n");
+  printf("  --no-early-stop         Ignore end token, generate all max-new-tokens\n");
   printf("  --output <path>         Write results JSON to file\n");
   printf("  --help                  Show this help\n");
 }
@@ -83,6 +85,7 @@ static CliArgs parse_args(int argc, char* argv[]) {
     else if (arg == "--profile")    args.benchmark = true;
     else if (arg == "--greedy")     args.greedy = true;
     else if (arg == "--no-stream-output") args.no_stream_output = true;
+    else if (arg == "--no-early-stop") args.no_early_stop = true;
     else if (arg == "--help")       { print_usage(argv[0]); exit(0); }
     else {
       // Backward compatibility: positional model and vocab paths
@@ -110,6 +113,17 @@ static std::string read_prompt(const CliArgs& args) {
   return args.prompt;
 }
 
+// 简单 ChatML 包装
+static std::string wrap_chatml(const std::string& user_input) {
+  std::string prompt;
+  prompt += "<|im_start|>system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|im_end|>\n";
+  prompt += "<|im_start|>user\n";
+  prompt += user_input;
+  prompt += "<|im_end|>\n";
+  prompt += "<|im_start|>assistant\n";
+  return prompt;
+}
+
 // ============================================================
 // Inference function — returns output tokens and populates
 // a RunRecord with timing data using the Profiler.
@@ -120,7 +134,8 @@ static std::vector<int32_t> generate(
     int total_steps,
     profile::Profiler* profiler,
     bool stream_output,
-    bool is_benchmark) {
+    bool is_benchmark,
+  bool force_all = false) {
 
   // ---- Tokenizer encode ----
   profiler->set_cpu_start();
@@ -209,7 +224,7 @@ static std::vector<int32_t> generate(
       }
     }
 
-    if (model.is_sentence_ending(next)) {
+    if (!force_all && model.is_sentence_ending(next)) {
       break;
     }
     if (is_prompt) {
@@ -343,7 +358,9 @@ int main(int argc, char* argv[]) {
   google::InitGoogleLogging(argv[0]);
 
   auto args = parse_args(argc, argv);
-  auto prompt_text = read_prompt(args);
+  auto raw_prompt = read_prompt(args);
+  // ChatML 包装，让模型知道这是对话
+  auto prompt_text = wrap_chatml(raw_prompt);
 
   // ---- Create profiler ----
   auto profiler = std::make_unique<profile::Profiler>();
@@ -383,7 +400,7 @@ int main(int argc, char* argv[]) {
 
     auto start = std::chrono::steady_clock::now();
     auto words = generate(model, prompt_text, args.max_new_tokens,
-                          profiler.get(), true, false);
+                          profiler.get(), true, false, false);
     auto end = std::chrono::steady_clock::now();
     auto duration = std::chrono::duration<double>(end - start).count();
 
@@ -394,6 +411,12 @@ int main(int argc, char* argv[]) {
   }
 
   // ---- Benchmark mode ----
+  // 打印 prompt token 数量
+  {
+    auto prompt_tokens = model.encode(prompt_text);
+    printf("Prompt token count: %d\n", static_cast<int>(prompt_tokens.size()));
+  }
+
   // 1. Warmup runs (not recorded)
   if (args.warmup > 0) {
     printf("Warmup (%d iterations)...\n", args.warmup);
@@ -401,7 +424,7 @@ int main(int argc, char* argv[]) {
     for (int i = 0; i < args.warmup; ++i) {
       model.set_nvtx_context("W" + std::to_string(i + 1));
       generate(model, prompt_text, args.max_new_tokens, profiler.get(),
-               false, false);
+               false, false, args.no_early_stop);
     }
     // Clear warmup records (they were added to profiler)
   }
@@ -417,7 +440,7 @@ int main(int argc, char* argv[]) {
     fflush(stdout);
     model.set_nvtx_context("R" + std::to_string(i + 1));
     generate(model, prompt_text, args.max_new_tokens, profiler.get(),
-             false, true);
+             false, true, args.no_early_stop);
     const auto& last_run = profiler->runs().back();
     printf(" — %d tokens, %.1f ms\n", last_run.output_tokens, last_run.e2e_ms);
     fflush(stdout);

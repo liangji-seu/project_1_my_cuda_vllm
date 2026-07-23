@@ -773,30 +773,9 @@ void LLama2Model::cls_logits(const tensor::Tensor& input) {
   tensor::Tensor& input_mut = const_cast<tensor::Tensor&>(input);
   STATUS_CHECK(norm->forward(input, input_mut));
 
-  // Measure lm_head matmul GPU time
-  cudaEvent_t ev_mm_start = nullptr, ev_mm_stop = nullptr;
-  if (profiler_) {
-    cudaEventCreate(&ev_mm_start);
-    cudaEventCreate(&ev_mm_stop);
-    cudaStream_t stream = cuda_stream_ ? cuda_stream_->stream : nullptr;
-    cudaEventRecord(ev_mm_start, stream);
-  }
-
   tensor::Tensor& forward_output = get_buffer(ModelBufferType::kForwardOutput);
   CHECK(llama_layers_->cls_layer_ != nullptr);
   STATUS_CHECK(llama_layers_->cls_layer_->forward(input, forward_output));
-
-  if (profiler_) {
-    cudaStream_t stream = cuda_stream_ ? cuda_stream_->stream : nullptr;
-    cudaEventRecord(ev_mm_stop, stream);
-    cudaEventSynchronize(ev_mm_stop);
-    float ms = 0;
-    cudaEventElapsedTime(&ms, ev_mm_start, ev_mm_stop);
-    cudaEventDestroy(ev_mm_start);
-    cudaEventDestroy(ev_mm_stop);
-    std::string stage = is_prefill_phase_ ? "prefill" : "decode";
-    profiler_->add_layer_record("cls_logits_matmul", stage, -1, ms);
-  }
 }
 
 void LLama2Model::set_cuda_stream_on_all_layers() {
