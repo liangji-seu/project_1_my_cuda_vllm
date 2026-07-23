@@ -93,12 +93,13 @@ aux_source_directory(sys/src/op/kernel/cpu DIR_OP_KERNEL_CPU)
 aux_source_directory(sys/src/op/kernel/gpu DIR_OP_KERNEL_GPU)
 aux_source_directory(sys/src/model DIR_MODEL)
 aux_source_directory(sys/src/sampler DIR_SAMPLER)
+file(GLOB DIR_SAMPLER_CUDA sys/src/sampler/*.cu)
 
 # Profile module (always built)
 file(GLOB DIR_PROFILE sys/src/profile/*.cpp)
 
 add_library(my_cuda_vllm SHARED
-  ${DIR_BASE} ${DIR_TENSOR} ${DIR_OP} ${DIR_OP_KERNEL} ${DIR_OP_KERNEL_CPU} ${DIR_OP_KERNEL_GPU} ${DIR_MODEL} ${DIR_SAMPLER} ${DIR_PROFILE}
+  ${DIR_BASE} ${DIR_TENSOR} ${DIR_OP} ${DIR_OP_KERNEL} ${DIR_OP_KERNEL_CPU} ${DIR_OP_KERNEL_GPU} ${DIR_MODEL} ${DIR_SAMPLER} ${DIR_SAMPLER_CUDA} ${DIR_PROFILE}
 )
 
 target_link_libraries(my_cuda_vllm

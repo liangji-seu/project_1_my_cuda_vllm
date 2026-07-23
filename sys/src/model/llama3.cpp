@@ -8,6 +8,7 @@
 #include "../op/kernel/cpu/rope_kernel.h"
 #include "sampler/topk_sampler.h"
 #include "sampler/argmax_sampler.h"
+#include "sampler/gpu_argmax.h"
 
 namespace model {
 
@@ -856,22 +857,19 @@ int32_t LLama2Model::post_processing(const tensor::Tensor& pos, bool is_prompt) 
   }
   tensor::Tensor& forward_output = get_buffer(ModelBufferType::kForwardOutput);
 
-  // If logits are on GPU, copy to a CPU staging buffer for sampling,
-  // then transfer back to GPU for the next forward pass.
-  bool was_gpu = (forward_output.get_device_type() == base::DeviceType_t::GPU);
-  if (was_gpu) {
-    forward_output.to("cpu", nullptr);
+  if (forward_output.get_device_type() == base::DeviceType_t::GPU) {
+    // GPU argmax: 直接在GPU上找最大值索引, 只拷贝 8 字节结果
+    // 消除原来 152K floats (607KB) 的 GPU→CPU→GPU 来回拷贝
+    const float* logits_gpu = static_cast<const float*>(forward_output.get_ptr());
+    return static_cast<int32_t>(
+        sampler::gpu_argmax(logits_gpu, forward_output.get_size(),
+                            cuda_stream_ ? cuda_stream_->stream : nullptr));
   }
 
+  // CPU fallback
   const float* forward_logits = static_cast<const float*>(forward_output.get_ptr());
-  int32_t result = static_cast<int32_t>(
+  return static_cast<int32_t>(
       sampler_->sample(forward_logits, forward_output.get_size()));
-
-  if (was_gpu) {
-    forward_output.to("cuda", nullptr);
-  }
-
-  return result;
 }
 
 }  // namespace model
