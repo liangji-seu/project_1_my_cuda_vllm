@@ -48,6 +48,7 @@ class CudaTimer {
 // ============================================================
 // Stage-level profiling data
 // ============================================================
+//每个阶段的耗时
 struct StageRecord {
   std::string name;
   int32_t calls = 0;
@@ -55,7 +56,7 @@ struct StageRecord {
   float avg_ms = 0.0f;
 };
 
-// Per-layer module timing
+// 每个层级的耗时
 struct LayerModuleRecord {
   std::string module_name;
   std::string stage;      // "prefill" or "decode"
@@ -66,7 +67,7 @@ struct LayerModuleRecord {
   float percentage = 0.0f;  // of total GPU time for this stage
 };
 
-// Single run result
+// 单次推理的结果
 struct RunRecord {
   int32_t prompt_tokens = 0;
   int32_t output_tokens = 0;
@@ -83,6 +84,7 @@ struct RunRecord {
 };
 
 // Full benchmark result
+//平均的benchmark
 struct BenchmarkResult {
   // Environment
   std::string gpu_name;
@@ -147,18 +149,20 @@ class Profiler {
  public:
   Profiler();
 
-  // ---- Memory tracking ----
-  void record_memory_before_model();
+  // 显存统计
+  void record_memory_before_model();//这3个是对cudaMemGetInfo的包装
   void record_memory_after_model();
   void record_peak_memory();
   size_t memory_before_mb() const { return mem_before_mb_; }
   size_t memory_after_mb() const { return mem_after_mb_; }
   size_t memory_peak_mb() const { return mem_peak_mb_; }
 
+  //CPU时间计时打点
   // ---- CPU-wall-clock timing (for phases where GPU isn't involved) ----
   void set_cpu_start();
   float cpu_elapsed_ms() const;
 
+  //GPU时间计时打点
   // ---- GPU cudaEvent timers ----
   // Create/get a named timer that lives for the profiler's lifetime.
   CudaTimer* get_timer(const std::string& name);
@@ -166,6 +170,7 @@ class Profiler {
   // ---- Layer profiling ----
   // Record a layer module timing. Called by the model during forward() when
   // layer profiling is enabled.
+  // 一个层跑完了，记录数据
   void add_layer_record(const std::string& module, const std::string& stage,
                         int32_t layer_idx, float elapsed_ms);
 
@@ -174,13 +179,16 @@ class Profiler {
   void record_stage_time(const std::string& stage_name, float elapsed_ms);
 
   // ---- Benchmark result generation ----
-  void add_run(const RunRecord& run);
+  void add_run(const RunRecord& run);//一次完整的推理结束，记录数据
+
+
+  //计算平均的benchmark
   BenchmarkResult compute_result(const std::string& model_path,
                                  int32_t prompt_tokens, int32_t max_new_tokens,
                                  int32_t warmup_iterations, int32_t repeat_iterations,
                                  bool greedy, int32_t seed);
 
-  // ---- Access ----
+  // 查询相关信息
   const std::vector<RunRecord>& runs() const { return runs_; }
   void clear_runs() { runs_.clear(); }
   const std::vector<LayerModuleRecord>& layer_records() const { return layer_records_; }
@@ -194,19 +202,25 @@ class Profiler {
   void set_layer_profile_enabled(bool v) { layer_profile_enabled_ = v; }
 
  private:
+ //三次 cudaMemGetInfo 的快照
   size_t mem_before_mb_ = 0;
   size_t mem_after_mb_ = 0;
   size_t mem_peak_mb_ = 0;
 
+  //chrono 起点，给 tokenizer 等纯 CPU 工作计时
   std::chrono::steady_clock::time_point cpu_start_;
+
+  //	map<string, CudaTimer>，按名字缓存 GPU 计时器
   std::map<std::string, std::unique_ptr<CudaTimer>> timers_;
 
+  //每次单次推理的原始数据：
+  //一次完整 prompt → 最后一个 token 输出，包含 prefill + 全部 decode step
   std::vector<RunRecord> runs_;
-  std::vector<LayerModuleRecord> layer_records_;
-  std::vector<StageRecord> stage_records_;
+  std::vector<LayerModuleRecord> layer_records_;//每层耗时汇总
+  std::vector<StageRecord> stage_records_;//每个阶段性耗时汇总
 
-  bool stream_output_ = true;
-  bool layer_profile_enabled_ = false;
+  bool stream_output_ = true;//是否是流式输出
+  bool layer_profile_enabled_ = false;//是否开启每层同步计时
 
   // Helper for percentiles
   static float percentile(const std::vector<float>& sorted, float p);
