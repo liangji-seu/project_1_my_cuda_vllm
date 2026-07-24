@@ -55,6 +55,9 @@ class LLama2Model : public Model {
   int32_t current_forward_pos_ = 0;
   bool is_prefill_phase_ = false;
 
+  // CUDA Graph 支持: pos 必须是 GPU 端变量(避免被 graph capture bake)
+  int32_t* d_decode_pos_ = nullptr;
+
  public:
   explicit LLama2Model(base::TokenizerType tokenizer_type, std::string token_path,
                        std::string model_path, bool is_quant_model);
@@ -77,8 +80,12 @@ class LLama2Model : public Model {
   // GPU argmax 异步结果暂存区 (在 post_processing 中异步写入)
   int32_t async_next_token_ = 0;
 
-  // NVTX context label, set by benchmark/demo before each run.
-  // e.g. "warmup1/prefill", "run3/decode"
+ public:
+  int32_t get_async_next_token() const { return async_next_token_; }
+  int32_t* get_decode_pos_gpu() const { return d_decode_pos_; }
+  kernel::CudaStream* get_cuda_stream() const { return cuda_stream_.get(); }
+
+  // NVTX context label
   void set_nvtx_context(const std::string& label) { nvtx_context_ = label; }
 
  private:

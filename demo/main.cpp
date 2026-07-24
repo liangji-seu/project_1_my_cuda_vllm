@@ -11,6 +11,7 @@
 
 #include "model/llama3.h"
 #include "profile/profiler.h"
+#include "op/kernel/gpu/mha_kernel.cuh"
 
 // ============================================================
 // Default paths
@@ -132,6 +133,7 @@ static std::vector<int32_t> generate(
     model::LLama2Model& model,
     const std::string& sentence,
     int total_steps,
+    bool is_warmup_run,
     profile::Profiler* profiler,
     bool stream_output,
     bool is_benchmark,
@@ -150,12 +152,16 @@ static std::vector<int32_t> generate(
   const auto& prompt_embedding = model.embedding(tokens);
   auto& pos_tensor = model.get_buffer(model::ModelBufferType::kInputPos);
 
+  // CUDA Graph: capture entire decode step to eliminate ~200 kernel launch overhead
   cudaStream_t stream = nullptr;
-  // If on GPU, grab the CUDA stream for cudaEvent timing
+  cudaGraph_t decode_graph = nullptr;
+  cudaGraphExec_t decode_graph_exec = nullptr;
+  bool graph_captured = false;
   {
     auto& test_buf = model.get_buffer(model::ModelBufferType::kQuery);
     if (test_buf.get_device_type() == base::DeviceType_t::GPU) {
-      // Stream not directly accessible, model manages it internally.
+      auto* cuda_s = model.get_cuda_stream();
+      if (cuda_s) stream = cuda_s->stream;
     }
   }
 
@@ -206,22 +212,47 @@ static std::vector<int32_t> generate(
       profiler->set_cpu_start();
       if (timer_decode_step) timer_decode_step->record_start();
 
-      // 首个 decode step: 从 CPU prefill token 过渡, 走 embedding(tokens)
-      // 后续 decode steps: token 已在 GPU (post_processing 闭环写入), 走 embed_next_token 零拷贝
       op::EmbeddingOutput token_embedding;
+      tensor::Tensor input;
+
       if (first_decode) {
+        // 首个 decode: CPU prefill token → embedding → predict
         tokens = std::vector<int32_t>{next};
         token_embedding = model.embedding(tokens);
-      } else {
+        input = model.fill_input(pos_tensor, token_embedding, is_prompt);
+        model.predict(input, pos_tensor, is_prompt, next);
+      } else if (!graph_captured && stream && !is_warmup_run) {
+        // 首个 benchmark decode: 启用 graph mode + capture CUDA Graph
+        kernel::set_cuda_graph_mode(true, model.get_decode_pos_gpu());
+        cudaMemcpyAsync(model.get_decode_pos_gpu(), &pos, sizeof(int32_t),
+                        cudaMemcpyHostToDevice, stream);
+        cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal);
         token_embedding = model.embed_next_token(next);
+        input = model.fill_input(pos_tensor, token_embedding, is_prompt);
+        model.predict(input, pos_tensor, is_prompt, next);
+        cudaStreamEndCapture(stream, &decode_graph);
+        cudaGraphInstantiate(&decode_graph_exec, decode_graph, NULL, NULL, 0);
+        graph_captured = true;
+      } else if (!graph_captured && stream && is_warmup_run) {
+        // warmup decode (非 capture): 正常路径, 顺便预热所有静态 GPU 分配
+        token_embedding = model.embed_next_token(next);
+        input = model.fill_input(pos_tensor, token_embedding, is_prompt);
+        model.predict(input, pos_tensor, is_prompt, next);
+      } else if (graph_captured) {
+        // 更新 pos → 启动 graph (200+ kernel → 1 launch)
+        cudaMemcpyAsync(model.get_decode_pos_gpu(), &pos, sizeof(int32_t),
+                        cudaMemcpyHostToDevice, stream);
+        cudaGraphLaunch(decode_graph_exec, stream);
+        next = model.get_async_next_token();
+      } else {
+        // CPU fallback (no stream)
+        token_embedding = model.embed_next_token(next);
+        input = model.fill_input(pos_tensor, token_embedding, is_prompt);
+        model.predict(input, pos_tensor, is_prompt, next);
       }
-      tensor::Tensor input = model.fill_input(pos_tensor, token_embedding, is_prompt);
-      model.predict(input, pos_tensor, is_prompt, next);
 
       if (timer_decode_step) timer_decode_step->record_stop();
 
-      // Measure per-token decode latency
-      // cudaEventSynchronize needed for accurate GPU timing
       if (timer_decode_step) {
         float step_ms = timer_decode_step->elapsed_ms(true);
         itl_ms.push_back(step_ms);
@@ -406,7 +437,7 @@ int main(int argc, char* argv[]) {
     fflush(stdout);
 
     auto start = std::chrono::steady_clock::now();
-    auto words = generate(model, prompt_text, args.max_new_tokens,
+    auto words = generate(model, prompt_text, args.max_new_tokens, false,
                           profiler.get(), true, false, false);
     auto end = std::chrono::steady_clock::now();
     auto duration = std::chrono::duration<double>(end - start).count();
@@ -430,8 +461,8 @@ int main(int argc, char* argv[]) {
     fflush(stdout);
     for (int i = 0; i < args.warmup; ++i) {
       model.set_nvtx_context("W" + std::to_string(i + 1));
-      generate(model, prompt_text, args.max_new_tokens, profiler.get(),
-               false, false, args.no_early_stop);
+      generate(model, prompt_text, args.max_new_tokens, true,
+               profiler.get(), false, false, args.no_early_stop);
     }
     // Clear warmup records (they were added to profiler)
   }
@@ -446,8 +477,8 @@ int main(int argc, char* argv[]) {
     printf("  Run %d/%d", i + 1, args.repeat);
     fflush(stdout);
     model.set_nvtx_context("R" + std::to_string(i + 1));
-    generate(model, prompt_text, args.max_new_tokens, profiler.get(),
-             false, true, args.no_early_stop);
+    generate(model, prompt_text, args.max_new_tokens, false,
+             profiler.get(), false, true, args.no_early_stop);
     const auto& last_run = profiler->runs().back();
     printf(" — %d tokens, %.1f ms\n", last_run.output_tokens, last_run.e2e_ms);
     fflush(stdout);

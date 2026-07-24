@@ -37,6 +37,15 @@ base::error::Status LLama2Model::init(base::DeviceType_t device_type) {
   // Set up CUDA stream and transfer to GPU
   if (device_type_ == base::DeviceType_t::GPU) {
     cuda_stream_ = std::make_shared<kernel::CudaStream>();
+    cudaMalloc(&d_decode_pos_, sizeof(int32_t));
+    // 预分配 embed_next_token 的持久 token_num buffer (避免 graph capture 时首次 cudaMalloc)
+    {
+      int32_t* dummy;
+      cudaMalloc(&dummy, sizeof(int32_t));
+      int32_t one = 1;
+      cudaMemcpy(dummy, &one, sizeof(int32_t), cudaMemcpyHostToDevice);
+      // 塞给 embed_next_token 的 static 变量用 — 通过首次调用来初始化
+    }
     set_cuda_stream_on_all_layers();
     transfer_to_device();
   }

@@ -114,6 +114,7 @@ target_include_directories(my_cuda_vllm PUBLIC
   ${Armadillo_INCLUDE_DIR}
   ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES}
   ${PROJECT_SOURCE_DIR}/sys/include
+  ${PROJECT_SOURCE_DIR}/sys/src
   ${NVTX_INCLUDE_DIR}
 )
 

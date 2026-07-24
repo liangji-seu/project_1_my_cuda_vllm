@@ -1,7 +1,12 @@
 #pragma once
 #include "tensor/tensor.h"
+#include <cstdint>
 
 namespace kernel {
+
+// CUDA Graph 全局模式: enable 后 MHA/RoPE 使用 d_pos (GPU buffer)
+// 而非内部的 cudaMemcpy+栈变量 (栈变量无法被 graph capture)
+void set_cuda_graph_mode(bool enable, int32_t* d_pos = nullptr);
 
 void mha_kernel_cuda(
     int32_t pos, int32_t head_num, int32_t layer_index,
