@@ -16,7 +16,7 @@
 #include "gpu/swiglu_kernel.cuh"
 #include "gpu/softmax_kernel.cuh"
 #include "gpu/rope_kernel.cuh"
-#include "gpu/mha_kernel.cuh"
+#include "gpu/mha_baseline_kernel.cuh"
 #include "gpu/matmul_int8_kernel.cuh"
 
 
@@ -111,7 +111,7 @@ MHA_backend get_mha_interface(base::DeviceType_t device_type){
     if(device_type == base::DeviceType_t::CPU){
         return mha_kernel_cpu;
     } else if(device_type == base::DeviceType_t::GPU){
-        return mha_kernel_cuda;
+        return mha_baseline_kernel_cuda;
     } else {
         LOG(ERROR)<<"error device type";
         return nullptr;
