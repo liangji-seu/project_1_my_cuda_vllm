@@ -206,60 +206,58 @@ def write_int8_bin(output_path, config, weights, extras):
 
     print(f"\nQuantizing ALL matmul layers (per-group, group_size={GROUP_SIZE})...")
 
-    # Quantize each weight matrix
-    quantized = {}
+    # Quantize each weight matrix per-layer (for interleaved layout)
+    quantized_per_layer = {}  # key -> [(int8_0, scales_0), (int8_1, scales_1), ...]
     for key in ["wq", "wk", "wv", "wo", "w1", "w2", "w3"]:
         w_fp32 = weights[key]  # [L, N, K]
         L, N, K = w_fp32.shape
-        w_int8_list = []
-        scale_list = []
+        quantized_per_layer[key] = []
+        total_elems = 0
+        total_scales = 0
         for i in range(L):
             wi, si = quantize_q80(w_fp32[i], GROUP_SIZE)
-            w_int8_list.append(wi)
-            scale_list.append(si)
-        quantized[key] = (np.concatenate(w_int8_list), np.concatenate(scale_list))
-        total_elems = sum(w_fp32[i].size for i in range(L))
-        total_scales = sum(w_fp32[i].size // GROUP_SIZE for i in range(L))
+            quantized_per_layer[key].append((wi, si))
+            total_elems += wi.size
+            total_scales += si.size
         print(f"  {key}: [{L}×{N}×{K}] → INT8 {total_elems} elems, scales {total_scales}")
 
     # CLS
+    cls_per_layer = None
     if not tied:
         cls_fp32 = extras["cls_weight"]
         cls_int8, cls_scales = quantize_q80(cls_fp32, GROUP_SIZE)
-        print(f"  cls: [{vocab_size}×{dim}] → INT8 {cls_fp32.size} elems, scales {cls_fp32.size // GROUP_SIZE}")
+        cls_per_layer = (cls_int8, cls_scales)
+        print(f"  cls: [{vocab_size}×{dim}] → INT8 {cls_int8.size} elems, scales {cls_scales.size}")
     else:
-        cls_int8, cls_scales = None, None
         print("  cls: shared with embedding (FP32, stored at embedding position)")
 
     # ================================================================
-    # Write .bin — interleaved layout matching teacher's KuiperLLama
+    # Write .bin — per-layer interleaved layout
+    # [Wq[0]INT8|Wq[0]scales|Wq[1]INT8|Wq[1]scales|...|Wk[0]INT8|Wk[0]scales|...]
     # ================================================================
     with open(output_path, "wb") as f:
-        # Header: ModelConfig (32B) — uses head_dim field to store group_size
         legacy_vocab_size = vocab_size if tied else -vocab_size
         header = struct.pack(
-            MODEL_CONFIG_FMT,
-            dim, hidden_dim, layer_num,
+            MODEL_CONFIG_FMT, dim, hidden_dim, layer_num,
             config["head_num"], config["kv_head_num"],
             legacy_vocab_size, seq_len,
-            GROUP_SIZE,  # group_size stored in head_dim field (teacher's convention)
+            head_dim,  # actual head_dim (NOT group_size!)
         )
         f.write(header)
-        f.write(struct.pack("i", flags))  # flags
-        # quant header: group_size + total_int8 placeholder (not used, for compatibility)
+        f.write(struct.pack("i", flags))
         f.write(struct.pack("i", GROUP_SIZE))
         f.write(struct.pack("q", 0))
 
-        # ── Interleaved INT8 + scales for each matmul type ──
+        # ── Per-layer interleaved INT8 + scales ──
         for key in ["wq", "wk", "wv", "wo", "w1", "w2", "w3"]:
-            w_int8, w_scales = quantized[key]
-            f.write(w_int8.tobytes())
-            f.write(w_scales.tobytes())
+            for w_int8, w_scales in quantized_per_layer[key]:
+                f.write(w_int8.tobytes())
+                f.write(w_scales.tobytes())
 
-        # CLS (INT8 + scales) if not tied
-        if not tied and cls_int8 is not None:
-            f.write(cls_int8.tobytes())
-            f.write(cls_scales.tobytes())
+        # CLS
+        if not tied and cls_per_layer is not None:
+            f.write(cls_per_layer[0].tobytes())
+            f.write(cls_per_layer[1].tobytes())
 
         # ── FP32 weights ──
         # Embedding
@@ -291,7 +289,8 @@ def write_int8_bin(output_path, config, weights, extras):
 
     file_size = os.path.getsize(output_path)
     total_int8_bytes = sum(
-        w_int8.nbytes for w_int8, _ in quantized.values()
+        sum(w_int8.nbytes for w_int8, _ in layers)
+        for layers in quantized_per_layer.values()
     )
     print(f"\nOutput: {output_path} ({file_size / (1024**3):.2f} GB)")
     print(f"  INT8 data: {total_int8_bytes / (1024**2):.1f} MB")
