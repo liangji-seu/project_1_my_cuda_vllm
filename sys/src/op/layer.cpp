@@ -279,11 +279,12 @@ namespace op{
     }
 
     base::error::Status LayerParam::set_weight(size_t idx, const std::vector<size_t>& dims,
-                                                const void* ptr, base::DeviceType_t device_type) {
+                                                const void* ptr, base::DeviceType_t device_type,
+                                                tensor::DataType_t weight_dtype) {
         CHECK(idx < weights.size());
         CHECK(ptr != nullptr);
 
-        tensor::Tensor weight(data_type, dims, false, nullptr,
+        tensor::Tensor weight(weight_dtype, dims, false, nullptr,
                               const_cast<void*>(ptr));
         weight.set_device_type(device_type);
         weights[idx] = weight;
@@ -316,6 +317,11 @@ namespace op{
             if(!weight.is_empty()){
                 weight.to(dst_device_type, stream);
             }
+        }
+
+        // Transfer quantization scales to device if present
+        if (!scales.is_empty()) {
+            scales.to(dst_device_type, stream);
         }
     }
 

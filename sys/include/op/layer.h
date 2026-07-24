@@ -256,7 +256,8 @@ namespace op{
 
             //从原始指针直接设置权重（模型加载时使用）
             base::error::Status set_weight(size_t idx, const std::vector<size_t>& dims,
-                                           const void* ptr, base::DeviceType_t device_type);
+                                           const void* ptr, base::DeviceType_t device_type,
+                                           tensor::DataType_t weight_dtype = tensor::DataType_t::fp32);
 
             //设置量化张量
             void set_scales(const tensor::Tensor& scales);

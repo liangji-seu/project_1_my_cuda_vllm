@@ -12,7 +12,7 @@ private:
 
 public:
   explicit MatmulLayer(base::DeviceType_t device_type, float scale = 1.0f,
-                       bool has_bias = false);
+                       bool has_bias = false, bool is_quant = false);
 
   base::error::Status check_layer() override;
 

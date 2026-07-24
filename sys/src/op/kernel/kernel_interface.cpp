@@ -17,6 +17,7 @@
 #include "gpu/softmax_kernel.cuh"
 #include "gpu/rope_kernel.cuh"
 #include "gpu/mha_kernel.cuh"
+#include "gpu/matmul_int8_kernel.cuh"
 
 
 namespace kernel{
@@ -63,6 +64,18 @@ Matmul_backend get_matmul_interface(base::DeviceType_t device_type){
         return matmul_kernel_cpu;
     } else if(device_type == base::DeviceType_t::GPU){
         return matmul_kernel_cuda;  // 教师的 float4 + cub::BlockReduce + 128线程 版本
+    } else {
+        LOG(ERROR)<<"error device type";
+        return nullptr;
+    }
+}
+
+//INT8矩阵乘层
+MatmulInt8_backend get_matmul_int8_interface(base::DeviceType_t device_type){
+    if(device_type == base::DeviceType_t::CPU){
+        return matmul_int8_kernel_cpu;
+    } else if(device_type == base::DeviceType_t::GPU){
+        return matmul_int8_kernel_cuda;
     } else {
         LOG(ERROR)<<"error device type";
         return nullptr;

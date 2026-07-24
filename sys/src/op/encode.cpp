@@ -79,11 +79,17 @@ std::string BpeEncodeLayer::decode(int32_t token_id) const {
 
 std::string BpeEncodeLayer::decode(const std::vector<int32_t>& token_ids) const {
   CHECK(this->tiktoken_ != nullptr);
-  auto s = tiktoken_->decode(token_ids);
-  std::map<std::string, std::string> reverse_replacements;
-  reverse_replacements["Ġ"] = " ";
-  const std::string& sentence = absl::StrReplaceAll(s, reverse_replacements);
-  return sentence;
+  try {
+    auto s = tiktoken_->decode(token_ids);
+    std::map<std::string, std::string> reverse_replacements;
+    reverse_replacements["Ġ"] = " ";
+    const std::string& sentence = absl::StrReplaceAll(s, reverse_replacements);
+    return sentence;
+  } catch (const std::exception& e) {
+    // Some token IDs may not be individually decodable (e.g. special tokens
+    // or continuation bytes). Return empty string for those.
+    return std::string();
+  }
 }
 
 bool BpeEncodeLayer::is_sentence_ending(int32_t token_id) const {

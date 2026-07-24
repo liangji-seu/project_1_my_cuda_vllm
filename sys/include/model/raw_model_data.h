@@ -24,6 +24,8 @@ struct RawModelDataFp32 : RawModelData {
 
 struct RawModelDataInt8 : RawModelData {
   const void* weight(size_t offset) const override;
+  const float* scale_data = nullptr;  // points to scale array after INT8 weights
+  const float* scale(size_t offset) const { return scale_data + offset; }
 };
 
 }  // namespace model

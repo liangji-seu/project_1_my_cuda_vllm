@@ -85,10 +85,15 @@ base::error::Status Model::read_model_file() {
     LOG(WARNING) << "No flags field in model file, using legacy inference (may be wrong!)";
   }
 
+  int64_t total_int8_elems = 0;
   if (is_quant_model_) {
     if (fread(&group_size_, sizeof(int32_t), 1, file) != 1) {
       return base::error::Status(base::error::kModelParseError,
                                  "Failed to retrieve the group size from the model file.");
+    }
+    if (fread(&total_int8_elems, sizeof(int64_t), 1, file) != 1) {
+      return base::error::Status(base::error::kModelParseError,
+                                 "Failed to retrieve total_int8_elems from the model file.");
     }
   }
   fclose(file);
@@ -124,16 +129,22 @@ base::error::Status Model::read_model_file() {
                                    " into memory.");
   }
 
-  // Header layout: ModelConfig (32 bytes) + flags (4 bytes) [+ group_size for quant]
+  // Header layout: ModelConfig (32 bytes) + flags (4 bytes) [+ group_size + total_int8_elems for quant]
   constexpr size_t kHeaderSize = sizeof(ModelConfig) + sizeof(int32_t);  // flags field
 
   if (!is_quant_model_) {
     raw_model_data_->weight_data =
         static_cast<int8_t*>(raw_model_data_->data) + kHeaderSize;
   } else {
+    // Quant header: ModelConfig(32B) | flags(4B) | group_size(4B) | total_int8_elems(8B)
+    constexpr size_t kQuantHeaderSize = kHeaderSize + sizeof(int32_t) + sizeof(int64_t);
     raw_model_data_->weight_data =
-        static_cast<int8_t*>(raw_model_data_->data) + kHeaderSize +
-        sizeof(group_size_);
+        static_cast<int8_t*>(raw_model_data_->data) + kQuantHeaderSize;
+    // scale_data starts after all INT8 weights
+    auto raw_int8 = std::static_pointer_cast<RawModelDataInt8>(raw_model_data_);
+    size_t int8_weights_bytes = static_cast<size_t>(total_int8_elems) * sizeof(int8_t);
+    raw_int8->scale_data = reinterpret_cast<const float*>(
+        static_cast<const int8_t*>(raw_model_data_->weight_data) + int8_weights_bytes);
   }
 
   return base::error::Status();

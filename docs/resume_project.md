@@ -53,3 +53,24 @@ E2E latency           1706.63 ms                  879.25 ms
 TPOT                    10.79 ms                    6.87 ms
 E2E throughput          75.00 tok/s                145.58 tok/s
 Peak GPU mem            4183 MB                    1900 MB
+
+
+
+
+1. baseline实现
+2. 性能分析定位top kernel，优化后的效果对比
+3. 量化后的成功
+
+
+
+
+
+1. 项目描述
+基于C++17/CUDA构建Qwen模型的完整推理框架。
+2. 工作内容
+    1. 基础实现：基于RAII思想，依次设计并实现：内存分配器，Buffer层，Tensor层Op算子层，Model模型层。实现Qwen2.5-0.5B-Instruct模型的流式问答推理。并构建benchmark，layer-profile的评估流程，在单卡4090，50G的服务器，FP32精度下实现70tokens/s的吞吐量
+    2. 算子优化：使用Nsight Systems 进行layer-profile，定位kernel瓶颈在算子MHA(占79%总耗时)，matmul(19.3%)。通过使用共享内存，向量化访存，双缓冲区，warp tiling等技巧优化算子，实现
+    3. INT8量化：
+3. 项目成果
+    1. 推理性能提升：与baseline对比，与huggingface transformer 对比
+    2. 量化效果评估：

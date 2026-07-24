@@ -18,6 +18,7 @@ struct ChatArgs {
   std::string model_path = DEFAULT_MODEL_PATH;
   std::string vocab_path = DEFAULT_VOCAB_PATH;
   bool benchmark = false;
+  bool quant = false;
   int32_t max_new_tokens = 128;
   int32_t warmup = 3;
   int32_t repeat = 10;
@@ -32,6 +33,7 @@ static ChatArgs parse_chat_args(int argc, char* argv[]) {
     if (arg == "--model")           args.model_path = argv[++i];
     else if (arg == "--tokenizer")  args.vocab_path = argv[++i];
     else if (arg == "--benchmark")  args.benchmark = true;
+    else if (arg == "--quant")      args.quant = true;
     else if (arg == "--max-new-tokens") args.max_new_tokens = std::stoi(argv[++i]);
     else if (arg == "--warmup")     args.warmup = std::stoi(argv[++i]);
     else if (arg == "--repeat")     args.repeat = std::stoi(argv[++i]);
@@ -191,7 +193,7 @@ static void run_chat_benchmark(const ChatArgs& args) {
   profiler->set_cpu_start();
 
   model::LLama2Model model(base::TokenizerType::kEncodeBpe,
-                           args.vocab_path, args.model_path, false);
+                           args.vocab_path, args.model_path, args.quant);
   auto init_status = model.init(base::DeviceType_t::GPU);
   if (!init_status) {
     LOG(FATAL) << "Model init failed: " << static_cast<int>(init_status.get_err_code());
@@ -270,7 +272,7 @@ int main(int argc, char* argv[]) {
 
   // Model init
   model::LLama2Model model(base::TokenizerType::kEncodeBpe,
-                           args.vocab_path, args.model_path, false);
+                           args.vocab_path, args.model_path, args.quant);
   auto init_status = model.init(base::DeviceType_t::GPU);
   if (!init_status) {
     LOG(FATAL) << "Model init failed: " << static_cast<int>(init_status.get_err_code());

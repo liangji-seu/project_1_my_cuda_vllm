@@ -38,6 +38,7 @@ struct CliArgs {
   bool greedy = true;
   bool no_stream_output = false;
   bool no_early_stop = false;
+  bool quant = false;
 };
 
 static void print_usage(const char* prog) {
@@ -57,6 +58,7 @@ static void print_usage(const char* prog) {
   printf("  --greedy                Use greedy decoding (default)\n");
   printf("  --no-stream-output      Suppress per-token output in benchmark\n");
   printf("  --no-early-stop         Ignore end token, generate all max-new-tokens\n");
+  printf("  --quant                 Use INT8 weight-only quantized model\n");
   printf("  --output <path>         Write results JSON to file\n");
   printf("  --help                  Show this help\n");
 }
@@ -86,6 +88,7 @@ static CliArgs parse_args(int argc, char* argv[]) {
     else if (arg == "--greedy")     args.greedy = true;
     else if (arg == "--no-stream-output") args.no_stream_output = true;
     else if (arg == "--no-early-stop") args.no_early_stop = true;
+    else if (arg == "--quant")      args.quant = true;
     else if (arg == "--help")       { print_usage(argv[0]); exit(0); }
     else {
       // Backward compatibility: positional model and vocab paths
@@ -381,7 +384,7 @@ int main(int argc, char* argv[]) {
   profiler->set_cpu_start();
 
   model::LLama2Model model(base::TokenizerType::kEncodeBpe,
-                           args.vocab_path, args.model_path, false);
+                           args.vocab_path, args.model_path, args.quant);
 
   auto init_status = model.init(base::DeviceType_t::GPU);
   if (!init_status) {
