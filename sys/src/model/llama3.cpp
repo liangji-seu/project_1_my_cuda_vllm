@@ -197,244 +197,169 @@ void LLama2Model::create_param_quant_layers() {
   CHECK(is_quant_model_);
   CHECK(llama_layers_ != nullptr);
 
-  auto raw_int8 = std::static_pointer_cast<model::RawModelDataInt8>(raw_model_data_);
   auto cpu_device_type = base::DeviceType_t::CPU;
   int32_t dim = config_->dim_;
   int32_t hidden_dim = config_->hidden_dim_;
   bool has_bias = (config_->flags_ & FLAG_HAS_QKV_BIAS) != 0;
 
-  // ── INT8 .bin 文件布局 (header 之后) ──────────────────────────────
-  // [int8 weights 顺序存放] [float scales 顺序存放] [float 非量化权重]
+  // ── Interleaved file layout (matching teacher's KuiperLLama) ─────
+  // Each quantized tensor: [INT8 data | float scales] packed together.
+  // After all INT8+scales: [FP32 embedding, rmsnorm, bias, rope]
   //
-  // raw_model_data_->weight_data 已指向 int8 weight 区段起始位置
-  // raw_int8->scale_data        已指向 scale 区段起始位置
-  //
-  // 非量化区段起始位置 = scale_data + total_scale_count
-  // total_scale_count = sum of N * ceil(K / group_size) for each INT8 weight (per-group)
+  // pos: byte offset from weight_data start. Advances through file linearly.
 
-  constexpr size_t GROUP_SIZE = 64;
+  constexpr int32_t GROUP_SIZE = 64;
+  size_t pos = 0;  // byte offset from raw_model_data_->weight_data
 
-  size_t int8_off = 0;     // offset in int8 elements from weight_data
-  size_t scale_off = 0;    // offset in float elements from scale_data
-  size_t fp32_off = 0;     // offset in float elements from non-quant section start
-
-  // Helper: load INT8 weight + its per-group scales
+  // Helper: load INT8 weight + scales from interleaved position
   auto load_int8_weight = [&](const std::shared_ptr<op::MatmulLayer>& layer,
                                size_t N, size_t K) {
-    size_t num_groups = (K + GROUP_SIZE - 1) / GROUP_SIZE;
-
-    // INT8 weight: N*K int8 elements
-    layer->set_weight(0, {N, K},
-                      static_cast<const int8_t*>(raw_model_data_->weight_data) + int8_off,
-                      cpu_device_type, tensor::DataType_t::int8);
+    size_t weight_size = N * K;  // int8 elements
     layer->set_group_size(GROUP_SIZE);
-    int8_off += N * K;
+    layer->set_weight(0, {N, K}, raw_model_data_->weight(pos),
+                      cpu_device_type, tensor::DataType_t::int8);
+    pos += weight_size * sizeof(int8_t);
 
-    // per-group scale: N * num_groups float elements
+    // scales follow immediately after INT8 data
+    size_t scale_count = weight_size / GROUP_SIZE;
     auto cpu_alloc = base::CPUDeviceControllerFactory::get_instance();
-    tensor::Tensor scale_tensor(tensor::DataType_t::fp32, {N * num_groups}, false, nullptr,
-                                const_cast<float*>(raw_int8->scale(scale_off)));
+    tensor::Tensor scale_tensor(tensor::DataType_t::fp32, {scale_count}, false, nullptr,
+                                const_cast<float*>(reinterpret_cast<const float*>(
+                                    raw_model_data_->weight(pos))));
     scale_tensor.set_device_type(cpu_device_type);
     layer->set_scales(scale_tensor);
-    scale_off += N * num_groups;
-  };
-
-  // Helper: load FP32 weight from the non-quant section
-  auto load_fp32_weight_from_nonquant =
-      [&](size_t num_elements) -> const float* {
-    // Compute non-quant section start dynamically
-    // total_scale_count depends on total INT8 weights — compute from known shapes below
-    (void)num_elements;
-    return nullptr;  // placeholder, see compute below
-  };
-
-  // ── Pre-compute total_scale_count to know where non-quant section starts ──
-  // Only W1 and W3 are INT8; W2 kept FP32 due to large K=4864
-  auto num_groups = [](size_t K) { return (K + GROUP_SIZE - 1) / GROUP_SIZE; };
-  size_t total_scale_count = 0;
-  total_scale_count += config_->layer_num_ * hidden_dim * num_groups(dim);  // W1
-  total_scale_count += config_->layer_num_ * hidden_dim * num_groups(dim);  // W3
-  // Non-quant section starts here:
-  const float* fp32_base = raw_int8->scale(total_scale_count);
-
-  // Helper: get FP32 weight pointer from non-quant section
-  auto fp32_ptr = [&](size_t offset_elements) -> const void* {
-    return fp32_base + offset_elements;
+    pos += scale_count * sizeof(float);
   };
 
   // ════════════════════════════════════════════════════════════════
-  // Embedding
+  // INT8 quantized matmul weights (interleaved: INT8 + scales per tensor)
+  // Layout: Wq×L | Wk×L | Wv×L | Wo×L | W1×L | W2×L | W3×L | [CLS]
   // ════════════════════════════════════════════════════════════════
-  llama_layers_->embedding_layer_ = std::make_shared<op::EmbeddingLayer>(
-      device_type_, dim, config_->vocab_size_);
-  std::dynamic_pointer_cast<op::LayerParam>(llama_layers_->embedding_layer_)
-      ->set_weight(0, {static_cast<size_t>(config_->vocab_size_), static_cast<size_t>(dim)},
-                   fp32_ptr(fp32_off), cpu_device_type);
-  fp32_off += static_cast<size_t>(dim) * config_->vocab_size_;
 
-  // ════════════════════════════════════════════════════════════════
-  // Attention RMSNorm weights (FP32)
-  // ════════════════════════════════════════════════════════════════
-  size_t rmsnorm_pos_attn = fp32_off;
-  fp32_off += config_->layer_num_ * dim;
-
-  // ════════════════════════════════════════════════════════════════
-  // Wq, Wk, Wv, Wo — kept FP32 for attention accuracy
-  // ════════════════════════════════════════════════════════════════
+  // Wq
   for (int32_t i = 0; i < config_->layer_num_; ++i) {
-    auto wq = std::make_shared<op::MatmulLayer>(device_type_, 1.0f, has_bias, false);
-    wq->set_weight(0, {static_cast<size_t>(config_->q_dim_), static_cast<size_t>(dim)},
-                   fp32_ptr(fp32_off), cpu_device_type);
-    fp32_off += config_->q_dim_ * dim;
+    auto wq = std::make_shared<op::MatmulLayer>(device_type_, 1.0f, has_bias, true);
+    load_int8_weight(wq, config_->q_dim_, dim);
     llama_layers_->wq_layers_.push_back(wq);
   }
-  if (has_bias) {
-    for (int32_t i = 0; i < config_->layer_num_; ++i) {
-      auto wq = std::static_pointer_cast<op::MatmulLayer>(llama_layers_->wq_layers_[i]);
-      wq->set_weight(1, {static_cast<size_t>(config_->q_dim_)},
-                     fp32_ptr(fp32_off), cpu_device_type);
-      fp32_off += config_->q_dim_;
-    }
-  }
-
+  // Wk
   for (int32_t i = 0; i < config_->layer_num_; ++i) {
-    auto wk = std::make_shared<op::MatmulLayer>(device_type_, 1.0f, has_bias, false);
-    wk->set_weight(0, {static_cast<size_t>(config_->kv_dim_), static_cast<size_t>(dim)},
-                   fp32_ptr(fp32_off), cpu_device_type);
-    fp32_off += config_->kv_dim_ * dim;
+    auto wk = std::make_shared<op::MatmulLayer>(device_type_, 1.0f, has_bias, true);
+    load_int8_weight(wk, config_->kv_dim_, dim);
     llama_layers_->wk_layers_.push_back(wk);
   }
-  if (has_bias) {
-    for (int32_t i = 0; i < config_->layer_num_; ++i) {
-      auto wk = std::static_pointer_cast<op::MatmulLayer>(llama_layers_->wk_layers_[i]);
-      wk->set_weight(1, {static_cast<size_t>(config_->kv_dim_)},
-                     fp32_ptr(fp32_off), cpu_device_type);
-      fp32_off += config_->kv_dim_;
-    }
-  }
-
+  // Wv
   for (int32_t i = 0; i < config_->layer_num_; ++i) {
-    auto wv = std::make_shared<op::MatmulLayer>(device_type_, 1.0f, has_bias, false);
-    wv->set_weight(0, {static_cast<size_t>(config_->kv_dim_), static_cast<size_t>(dim)},
-                   fp32_ptr(fp32_off), cpu_device_type);
-    fp32_off += config_->kv_dim_ * dim;
+    auto wv = std::make_shared<op::MatmulLayer>(device_type_, 1.0f, has_bias, true);
+    load_int8_weight(wv, config_->kv_dim_, dim);
     llama_layers_->wv_layers_.push_back(wv);
   }
-  if (has_bias) {
-    for (int32_t i = 0; i < config_->layer_num_; ++i) {
-      auto wv = std::static_pointer_cast<op::MatmulLayer>(llama_layers_->wv_layers_[i]);
-      wv->set_weight(1, {static_cast<size_t>(config_->kv_dim_)},
-                     fp32_ptr(fp32_off), cpu_device_type);
-      fp32_off += config_->kv_dim_;
-    }
-  }
-
+  // Wo
   for (int32_t i = 0; i < config_->layer_num_; ++i) {
-    auto wo = std::make_shared<op::MatmulLayer>(device_type_);
-    wo->set_weight(0, {static_cast<size_t>(dim), static_cast<size_t>(config_->q_dim_)},
-                   fp32_ptr(fp32_off), cpu_device_type);
-    fp32_off += dim * config_->q_dim_;
+    auto wo = std::make_shared<op::MatmulLayer>(device_type_, 1.0f, false, true);
+    load_int8_weight(wo, dim, config_->q_dim_);
     llama_layers_->wo_layers_.push_back(wo);
   }
-
-  // ════════════════════════════════════════════════════════════════
-  // FFN RMSNorm weights (FP32)
-  // ════════════════════════════════════════════════════════════════
-  size_t rmsnorm_pos_ffn = fp32_off;
-  fp32_off += config_->layer_num_ * dim;
-
-  // ════════════════════════════════════════════════════════════════
-  // INT8 matmul weights: W1 (gate), W3 (up). W2 (down) kept FP32
-  // ════════════════════════════════════════════════════════════════
+  // W1 (gate)
   for (int32_t i = 0; i < config_->layer_num_; ++i) {
     auto w1 = std::make_shared<op::MatmulLayer>(device_type_, 1.0f, false, true);
     load_int8_weight(w1, hidden_dim, dim);
     llama_layers_->w1_layers_.push_back(w1);
   }
-
-  // W2 (down) — FP32 from non-quant section
+  // W2 (down)
   for (int32_t i = 0; i < config_->layer_num_; ++i) {
-    auto w2 = std::make_shared<op::MatmulLayer>(device_type_);
-    w2->set_weight(0, {static_cast<size_t>(dim), static_cast<size_t>(hidden_dim)},
-                   fp32_ptr(fp32_off), cpu_device_type);
-    fp32_off += dim * hidden_dim;
+    auto w2 = std::make_shared<op::MatmulLayer>(device_type_, 1.0f, false, true);
+    load_int8_weight(w2, dim, hidden_dim);
     llama_layers_->w2_layers_.push_back(w2);
   }
-
+  // W3 (up)
   for (int32_t i = 0; i < config_->layer_num_; ++i) {
     auto w3 = std::make_shared<op::MatmulLayer>(device_type_, 1.0f, false, true);
     load_int8_weight(w3, hidden_dim, dim);
     llama_layers_->w3_layers_.push_back(w3);
   }
 
-  // ════════════════════════════════════════════════════════════════
-  // Final RMSNorm weight (FP32)
-  // ════════════════════════════════════════════════════════════════
-  size_t rmsnorm_pos_final = fp32_off;
-  fp32_off += dim;
-
-  // ════════════════════════════════════════════════════════════════
-  // RoPE freqs_cos/freqs_sin (FP32, same as FP32 path)
-  // ════════════════════════════════════════════════════════════════
-  size_t freqs_pos = fp32_off;
-  fp32_off += 2 * config_->seq_len_ * config_->head_size_;
-
-  // ════════════════════════════════════════════════════════════════
-  // CLS layer — FP32 (shared with embedding when tied)
-  // ════════════════════════════════════════════════════════════════
-  llama_layers_->cls_layer_ = std::make_shared<op::MatmulLayer>(device_type_);
-  if (config_->is_shared_weight_) {
-    std::dynamic_pointer_cast<op::LayerParam>(llama_layers_->cls_layer_)
-        ->set_weight(0, {static_cast<size_t>(config_->vocab_size_), static_cast<size_t>(dim)},
-                     fp32_ptr(0), cpu_device_type);  // shared with embedding
+  // CLS — INT8 if not tied, otherwise shared FP32 with embedding
+  if (!config_->is_shared_weight_) {
+    llama_layers_->cls_layer_ =
+        std::make_shared<op::MatmulLayer>(device_type_, 1.0f, false, true);
+    load_int8_weight(std::static_pointer_cast<op::MatmulLayer>(llama_layers_->cls_layer_),
+                     config_->vocab_size_, dim);
   } else {
-    std::dynamic_pointer_cast<op::LayerParam>(llama_layers_->cls_layer_)
-        ->set_weight(0, {static_cast<size_t>(config_->vocab_size_), static_cast<size_t>(dim)},
-                     fp32_ptr(fp32_off), cpu_device_type);
-    fp32_off += static_cast<size_t>(config_->vocab_size_) * dim;
+    // CLS shares FP32 embedding weight — loaded below at embedding position
+    llama_layers_->cls_layer_ = std::make_shared<op::MatmulLayer>(device_type_);
   }
 
   // ════════════════════════════════════════════════════════════════
-  // RMSNorm layers (FP32)
-  //   [0 .. L-1]:     attention rmsnorm
-  //   [L .. 2L-1]:    FFN rmsnorm
-  //   [2L]:           final rmsnorm
+  // FP32 non-quant weights (after all INT8+scales)
   // ════════════════════════════════════════════════════════════════
+  // pos now points to start of FP32 section
+
+  // Embedding
+  llama_layers_->embedding_layer_ = std::make_shared<op::EmbeddingLayer>(
+      device_type_, dim, config_->vocab_size_);
+  std::dynamic_pointer_cast<op::LayerParam>(llama_layers_->embedding_layer_)
+      ->set_weight(0, {static_cast<size_t>(config_->vocab_size_), static_cast<size_t>(dim)},
+                   reinterpret_cast<const float*>(raw_model_data_->weight_data) + pos / sizeof(float),
+                   cpu_device_type);
+  size_t fp32_off = static_cast<size_t>(dim) * config_->vocab_size_;
+  if (config_->is_shared_weight_) {
+    // CLS shares embedding
+    std::dynamic_pointer_cast<op::LayerParam>(llama_layers_->cls_layer_)
+        ->set_weight(0, {static_cast<size_t>(config_->vocab_size_), static_cast<size_t>(dim)},
+                     reinterpret_cast<const float*>(raw_model_data_->weight_data) + pos / sizeof(float),
+                     cpu_device_type);
+  }
+
+  // RMSNorm layers (attn × L, then FN × L, then final)
+  const float* rmsnorm_base = reinterpret_cast<const float*>(raw_model_data_->weight_data)
+      + pos / sizeof(float) + fp32_off;
+
+  // attn rmsnorm
   for (int32_t i = 0; i < config_->layer_num_; ++i) {
     auto rms = std::make_shared<op::RmsNormLayer>(device_type_, dim);
-    rms->set_weight(0, {static_cast<size_t>(dim)},
-                    fp32_ptr(rmsnorm_pos_attn + i * dim), cpu_device_type);
+    rms->set_weight(0, {static_cast<size_t>(dim)}, rmsnorm_base + i * dim, cpu_device_type);
     llama_layers_->rmsnorm_layers_.push_back(rms);
   }
+  rmsnorm_base += config_->layer_num_ * dim;
+
+  // Wq/Wk/Wv bias (FP32, if present)
+  if (has_bias) {
+    for (int32_t i = 0; i < config_->layer_num_; ++i) {
+      auto wq = std::static_pointer_cast<op::MatmulLayer>(llama_layers_->wq_layers_[i]);
+      wq->set_weight(1, {static_cast<size_t>(config_->q_dim_)}, rmsnorm_base, cpu_device_type);
+      rmsnorm_base += config_->q_dim_;
+    }
+    for (int32_t i = 0; i < config_->layer_num_; ++i) {
+      auto wk = std::static_pointer_cast<op::MatmulLayer>(llama_layers_->wk_layers_[i]);
+      wk->set_weight(1, {static_cast<size_t>(config_->kv_dim_)}, rmsnorm_base, cpu_device_type);
+      rmsnorm_base += config_->kv_dim_;
+    }
+    for (int32_t i = 0; i < config_->layer_num_; ++i) {
+      auto wv = std::static_pointer_cast<op::MatmulLayer>(llama_layers_->wv_layers_[i]);
+      wv->set_weight(1, {static_cast<size_t>(config_->kv_dim_)}, rmsnorm_base, cpu_device_type);
+      rmsnorm_base += config_->kv_dim_;
+    }
+  }
+
+  // FFN rmsnorm
   for (int32_t i = 0; i < config_->layer_num_; ++i) {
     auto rms = std::make_shared<op::RmsNormLayer>(device_type_, dim);
-    rms->set_weight(0, {static_cast<size_t>(dim)},
-                    fp32_ptr(rmsnorm_pos_ffn + i * dim), cpu_device_type);
+    rms->set_weight(0, {static_cast<size_t>(dim)}, rmsnorm_base + i * dim, cpu_device_type);
     llama_layers_->rmsnorm_layers_.push_back(rms);
   }
+  rmsnorm_base += config_->layer_num_ * dim;
+
+  // Final rmsnorm
   {
     auto rms_final = std::make_shared<op::RmsNormLayer>(device_type_, dim);
-    rms_final->set_weight(0, {static_cast<size_t>(dim)},
-                          fp32_ptr(rmsnorm_pos_final), cpu_device_type);
+    rms_final->set_weight(0, {static_cast<size_t>(dim)}, rmsnorm_base, cpu_device_type);
     llama_layers_->rmsnorm_layers_.push_back(rms_final);
+    rmsnorm_base += dim;
   }
 
-  // ════════════════════════════════════════════════════════════════
-  // Q/K normalization weights (if present, FP32)
-  // ════════════════════════════════════════════════════════════════
-  if (config_->flags_ & FLAG_HAS_QK_NORM) {
-    size_t qk_norm_pos = fp32_off;
-    const int32_t head_size = config_->head_size_;
-    for (int32_t i = 0; i < config_->layer_num_; ++i) {
-      llama_layers_->q_norm_weights_.push_back(
-          fp32_base + qk_norm_pos + i * head_size);
-    }
-    qk_norm_pos += config_->layer_num_ * head_size;
-    for (int32_t i = 0; i < config_->layer_num_; ++i) {
-      llama_layers_->k_norm_weights_.push_back(
-          fp32_base + qk_norm_pos + i * head_size);
-    }
-  }
+  // RoPE freqs (skipped in loading — computed by init_mem)
+  // Q/K norm (skipped — not present for Qwen2.5-0.5B)
 }
 
 void LLama2Model::create_param_layers() {

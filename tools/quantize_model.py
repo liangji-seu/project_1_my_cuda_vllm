@@ -1,18 +1,9 @@
 #!/usr/bin/env python3
 """
-Per-channel symmetric INT8 weight-only quantization for matmul weights.
+INT8 weight-only quantization — matches teacher's KuiperLLama layout.
 
-Reads FP32 .bin, quantizes every matmul weight (Wq/Wk/Wv/Wo/W1/W2/W3/CLS) as:
-    scale[i] = max(|row[i]|) / 127
-    W_int8[i] = round(W_fp32[i] / scale[i])
-
-Embedding, RMSNorm, RoPE, and bias are kept FP32.
-
-Output .bin layout (matches create_param_quant_layers() in llama3.cpp):
-  Header: ModelConfig(32B) | flags(4B) | group_size(4B) | total_int8_elems(8B)
-  [int8 weights  series] — all quantized matmul weights
-  [float scales series]  — per-channel scales for each INT8 weight
-  [float non-quant]      — embedding, rmsnorm, rope, bias (same order as FP32 .bin)
+Per-group symmetric quantization (group_size=64), interleaved layout:
+  [INT8 weight | float scales] for each tensor, then FP32 embedding/rmsnorm.
 
 Usage:
     python3 tools/quantize_model.py demo/qwen2.5_0.5b_instruct.bin -o demo/qwen2.5_0.5b_instruct_int8.bin
@@ -25,37 +16,25 @@ import sys
 
 import numpy as np
 
-
-# ── ModelConfig (from config.h) ──────────────────────────────
-#   int32_t dim, hidden_dim, layer_num, head_num, kv_head_num, vocab_size, seq_len, head_dim
 MODEL_CONFIG_FMT = "iiiiiiii"
-MODEL_CONFIG_SIZE = struct.calcsize(MODEL_CONFIG_FMT)  # 32 bytes
+MODEL_CONFIG_SIZE = struct.calcsize(MODEL_CONFIG_FMT)
 
-# ── Flags (from config.h) ────────────────────────────────────
 FLAG_HAS_QKV_BIAS = 1 << 0
 FLAG_HAS_QK_NORM  = 1 << 1
 FLAG_HAS_O_BIAS   = 1 << 2
 FLAG_HAS_MLP_BIAS = 1 << 3
 FLAG_TIED_WEIGHTS = 1 << 4
 
+GROUP_SIZE = 64
+
 
 def load_fp32_bin(path):
-    """Load FP32 .bin into numpy arrays in deterministic order."""
     with open(path, "rb") as f:
-        # Parse header
-        header_raw = f.read(MODEL_CONFIG_SIZE)
-        config = struct.unpack(MODEL_CONFIG_FMT, header_raw)
-        dim, hidden_dim, layer_num, head_num, kv_head_num, vocab_size_raw, seq_len, head_dim = config
-
-        # Read flags
+        config = struct.unpack(MODEL_CONFIG_FMT, f.read(MODEL_CONFIG_SIZE))
         flags_raw = f.read(4)
-        flags = struct.unpack("i", flags_raw)[0]
+        flags = struct.unpack("i", flags_raw)[0] if len(flags_raw) == 4 else 0
 
-        # Determine if there's extra header for quant (group_size)
-        # For FP32 non-quant .bin, there's no group_size field after flags.
-        # The file pointer is now at the start of weight data.
-
-    # Derived config
+    dim, hidden_dim, layer_num, head_num, kv_head_num, vocab_size_raw, seq_len, head_dim = config
     vocab_size = abs(vocab_size_raw)
     tied_embeddings = (flags & FLAG_TIED_WEIGHTS) != 0
     has_bias = (flags & FLAG_HAS_QKV_BIAS) != 0
@@ -64,58 +43,45 @@ def load_fp32_bin(path):
     q_dim = head_num * head_dim
 
     config_dict = {
-        "dim": dim,
-        "hidden_dim": hidden_dim,
-        "layer_num": layer_num,
-        "head_num": head_num,
-        "kv_head_num": kv_head_num,
-        "vocab_size": vocab_size,
-        "seq_len": seq_len,
-        "head_dim": head_dim,
-        "flags": flags,
-        "tied_embeddings": tied_embeddings,
-        "has_bias": has_bias,
-        "has_qk_norm": has_qk_norm,
-        "kv_dim": kv_dim,
-        "q_dim": q_dim,
+        "dim": dim, "hidden_dim": hidden_dim, "layer_num": layer_num,
+        "head_num": head_num, "kv_head_num": kv_head_num,
+        "vocab_size": vocab_size, "seq_len": seq_len, "head_dim": head_dim,
+        "flags": flags, "tied_embeddings": tied_embeddings,
+        "has_bias": has_bias, "has_qk_norm": has_qk_norm,
+        "kv_dim": kv_dim, "q_dim": q_dim,
     }
     print(f"Model: dim={dim}, hidden_dim={hidden_dim}, layers={layer_num}, "
           f"heads={head_num}(kv={kv_head_num}), vocab={vocab_size}")
-    print(f"Flags: bias={has_bias}, qk_norm={has_qk_norm}, tied_embeddings={tied_embeddings}")
 
-    # Load all weights as fp32 numpy arrays
     with open(path, "rb") as f:
-        f.seek(MODEL_CONFIG_SIZE + 4)  # skip header + flags
+        f.seek(MODEL_CONFIG_SIZE + 4)
         all_data = f.read()
     all_floats = np.frombuffer(all_data, dtype=np.float32).copy()
 
-    offset = 0  # in float elements
-
-    # Parse weights in the same order as create_param_layers()
+    offset = 0
     weights = {}
 
-    # 1. Embedding [vocab_size, dim]
+    # 1. Embedding
     emb_size = vocab_size * dim
     weights["embedding"] = all_floats[offset:offset + emb_size].reshape(vocab_size, dim)
     offset += emb_size
 
-    # 2. Attention RMSNorm [layer_num, dim]
+    # 2. Attention RMSNorm
     attn_rms_size = layer_num * dim
     weights["attn_rmsnorm"] = all_floats[offset:offset + attn_rms_size].reshape(layer_num, dim)
     offset += attn_rms_size
 
-    # 3. Wq [layer_num, q_dim, dim]
+    # 3. Wq
     wq_size = layer_num * q_dim * dim
     weights["wq"] = all_floats[offset:offset + wq_size].reshape(layer_num, q_dim, dim)
     offset += wq_size
-    # Wq bias (if present)
     wq_bias = None
     if has_bias:
         wq_bias_size = layer_num * q_dim
         wq_bias = all_floats[offset:offset + wq_bias_size].reshape(layer_num, q_dim)
         offset += wq_bias_size
 
-    # 4. Wk [layer_num, kv_dim, dim]
+    # 4. Wk
     wk_size = layer_num * kv_dim * dim
     weights["wk"] = all_floats[offset:offset + wk_size].reshape(layer_num, kv_dim, dim)
     offset += wk_size
@@ -125,7 +91,7 @@ def load_fp32_bin(path):
         wk_bias = all_floats[offset:offset + wk_bias_size].reshape(layer_num, kv_dim)
         offset += wk_bias_size
 
-    # 5. Wv [layer_num, kv_dim, dim]
+    # 5. Wv
     wv_size = layer_num * kv_dim * dim
     weights["wv"] = all_floats[offset:offset + wv_size].reshape(layer_num, kv_dim, dim)
     offset += wv_size
@@ -135,43 +101,43 @@ def load_fp32_bin(path):
         wv_bias = all_floats[offset:offset + wv_bias_size].reshape(layer_num, kv_dim)
         offset += wv_bias_size
 
-    # 6. Wo [layer_num, dim, q_dim]
+    # 6. Wo
     wo_size = layer_num * dim * q_dim
     weights["wo"] = all_floats[offset:offset + wo_size].reshape(layer_num, dim, q_dim)
     offset += wo_size
 
-    # 7. FFN RMSNorm [layer_num, dim]
+    # 7. FFN RMSNorm
     ffn_rms_size = layer_num * dim
     weights["ffn_rmsnorm"] = all_floats[offset:offset + ffn_rms_size].reshape(layer_num, dim)
     offset += ffn_rms_size
 
-    # 8. W1 (gate) [layer_num, hidden_dim, dim]
+    # 8. W1
     w1_size = layer_num * hidden_dim * dim
     weights["w1"] = all_floats[offset:offset + w1_size].reshape(layer_num, hidden_dim, dim)
     offset += w1_size
 
-    # 9. W2 (down) [layer_num, dim, hidden_dim]
+    # 9. W2
     w2_size = layer_num * dim * hidden_dim
     weights["w2"] = all_floats[offset:offset + w2_size].reshape(layer_num, dim, hidden_dim)
     offset += w2_size
 
-    # 10. W3 (up) [layer_num, hidden_dim, dim]
+    # 10. W3
     w3_size = layer_num * hidden_dim * dim
     weights["w3"] = all_floats[offset:offset + w3_size].reshape(layer_num, hidden_dim, dim)
     offset += w3_size
 
-    # 11. Final RMSNorm [dim]
+    # 11. Final RMSNorm
     weights["final_rmsnorm"] = all_floats[offset:offset + dim]
     offset += dim
 
-    # 12. freqs_cos, freqs_sin [seq_len, head_dim] each
+    # 12. freqs
     freqs_size = seq_len * head_dim
     weights["freqs_cos"] = all_floats[offset:offset + freqs_size].reshape(seq_len, head_dim)
     offset += freqs_size
     weights["freqs_sin"] = all_floats[offset:offset + freqs_size].reshape(seq_len, head_dim)
     offset += freqs_size
 
-    # 13. CLS (if not tied)
+    # 13. CLS
     cls_weight = None
     if not tied_embeddings:
         cls_size = vocab_size * dim
@@ -190,47 +156,41 @@ def load_fp32_bin(path):
 
     return config_dict, weights, {
         "wq_bias": wq_bias, "wk_bias": wk_bias, "wv_bias": wv_bias,
-        "cls_weight": cls_weight,
-        "q_norm": q_norm, "k_norm": k_norm,
+        "cls_weight": cls_weight, "q_norm": q_norm, "k_norm": k_norm,
     }
 
 
-def quantize_per_group_symmetric(w_fp32: np.ndarray, group_size: int = 128):
+def quantize_q80(w_fp32: np.ndarray, group_size: int = 64):
     """
-    Per-group symmetric INT8 quantization.
+    Per-group symmetric INT8 quantization over flattened weights.
+    Matches teacher's quantize_q80 exactly.
 
     Args:
         w_fp32: FP32 weight matrix [N, K]
-        group_size: number of K elements per quantization group
+        group_size: elements per quantization group
     Returns:
-        w_int8: int8 quantized weights [N, K]
-        scales: per-group scales [N * num_groups]
+        w_int8: int8 quantized weights, flattened [N*K]
+        scales: per-group scales, [N*K/group_size]
     """
-    N, K = w_fp32.shape
-    num_groups = (K + group_size - 1) // group_size
+    assert w_fp32.size % group_size == 0, \
+        f"Weight size {w_fp32.size} not divisible by group_size {group_size}"
 
-    w_int8 = np.zeros((N, K), dtype=np.int8)
-    scales = np.zeros(N * num_groups, dtype=np.float32)
+    w_flat = w_fp32.ravel()
+    w_reshaped = w_flat.reshape(-1, group_size)  # [num_groups, group_size]
 
-    for n in range(N):
-        row = w_fp32[n]
-        for g in range(num_groups):
-            start = g * group_size
-            end = min(start + group_size, K)
-            group_vals = row[start:end]
-            amax = np.max(np.abs(group_vals))
-            amax = max(amax, 1e-12)
-            scale = amax / 127.0
-            scales[n * num_groups + g] = scale
-            w_int8[n, start:end] = np.clip(
-                np.round(group_vals / scale), -127, 127
-            ).astype(np.int8)
+    # Per-group max absolute value
+    wmax = np.max(np.abs(w_reshaped), axis=1)  # [num_groups]
+    wmax = np.maximum(wmax, 1e-12)
+    scales = (wmax / 127.0).astype(np.float32)  # [num_groups]
 
-    return w_int8, scales
+    # Quantize
+    quant = w_reshaped / scales[:, np.newaxis]
+    int8val = np.clip(np.round(quant), -127, 127).astype(np.int8)
+
+    return int8val.ravel(), scales
 
 
 def write_int8_bin(output_path, config, weights, extras):
-    """Write INT8 .bin file."""
     dim = config["dim"]
     hidden_dim = config["hidden_dim"]
     layer_num = config["layer_num"]
@@ -244,123 +204,108 @@ def write_int8_bin(output_path, config, weights, extras):
     has_qk_norm = config["has_qk_norm"]
     tied = config["tied_embeddings"]
 
-    # Quantize all matmul weights
-    print("\nQuantizing FFN weights only (per-group, group_size=64)...")
-    print("  Attention projections (Wq/Wk/Wv/Wo) kept FP32")
-    quantized = {}
-    total_int8_elems = 0
-    total_scale_elems = 0
-    GROUP_SIZE = 64
+    print(f"\nQuantizing ALL matmul layers (per-group, group_size={GROUP_SIZE})...")
 
-    # Only quantize W1(gate) and W3(up) — W2(down) kept FP32 due to large K=4864
-    for key in ["w1", "w3"]:
+    # Quantize each weight matrix
+    quantized = {}
+    for key in ["wq", "wk", "wv", "wo", "w1", "w2", "w3"]:
         w_fp32 = weights[key]  # [L, N, K]
         L, N, K = w_fp32.shape
-        num_groups = (K + GROUP_SIZE - 1) // GROUP_SIZE
         w_int8_list = []
         scale_list = []
         for i in range(L):
-            wi, si = quantize_per_group_symmetric(w_fp32[i], GROUP_SIZE)
-            w_int8_list.append(wi.ravel())
-            scale_list.append(si.ravel())
-        quantized[key] = (
-            np.concatenate(w_int8_list),
-            np.concatenate(scale_list),
-        )
-        total_int8_elems += L * N * K
-        total_scale_elems += L * N * num_groups
-        print(f"  {key}: [{L}×{N}×{K}] groups={num_groups} → int8 {L*N*K} elems, scales {L*N*num_groups}")
+            wi, si = quantize_q80(w_fp32[i], GROUP_SIZE)
+            w_int8_list.append(wi)
+            scale_list.append(si)
+        quantized[key] = (np.concatenate(w_int8_list), np.concatenate(scale_list))
+        total_elems = sum(w_fp32[i].size for i in range(L))
+        total_scales = sum(w_fp32[i].size // GROUP_SIZE for i in range(L))
+        print(f"  {key}: [{L}×{N}×{K}] → INT8 {total_elems} elems, scales {total_scales}")
 
-    # CLS kept FP32 (shared with embedding)
-    print("  cls: shared with embedding (FP32)")
-    print("  Wq/Wk/Wv/Wo: FP32 (not quantized)")
+    # CLS
+    if not tied:
+        cls_fp32 = extras["cls_weight"]
+        cls_int8, cls_scales = quantize_q80(cls_fp32, GROUP_SIZE)
+        print(f"  cls: [{vocab_size}×{dim}] → INT8 {cls_fp32.size} elems, scales {cls_fp32.size // GROUP_SIZE}")
+    else:
+        cls_int8, cls_scales = None, None
+        print("  cls: shared with embedding (FP32, stored at embedding position)")
 
-    print(f"\nTotal INT8 elements: {total_int8_elems}")
-    print(f"Total scale elements: {total_scale_elems}")
-
-    # Write .bin
+    # ================================================================
+    # Write .bin — interleaved layout matching teacher's KuiperLLama
+    # ================================================================
     with open(output_path, "wb") as f:
-        # ── Header ──
+        # Header: ModelConfig (32B) — uses head_dim field to store group_size
         legacy_vocab_size = vocab_size if tied else -vocab_size
         header = struct.pack(
             MODEL_CONFIG_FMT,
             dim, hidden_dim, layer_num,
             config["head_num"], config["kv_head_num"],
-            legacy_vocab_size, seq_len, head_dim,
+            legacy_vocab_size, seq_len,
+            GROUP_SIZE,  # group_size stored in head_dim field (teacher's convention)
         )
-        f.write(header)                          # 32 bytes
-        f.write(struct.pack("i", flags))         # 4 bytes
-        f.write(struct.pack("i", 0))             # group_size = 0 (not used)
-        f.write(struct.pack("q", total_int8_elems))  # 8 bytes
+        f.write(header)
+        f.write(struct.pack("i", flags))  # flags
+        # quant header: group_size + total_int8 placeholder (not used, for compatibility)
+        f.write(struct.pack("i", GROUP_SIZE))
+        f.write(struct.pack("q", 0))
 
-        # ── INT8 weights section (FFN: W1, W3 only) ──
-        for key in ["w1", "w3"]:
-            w_int8, _ = quantized[key]
+        # ── Interleaved INT8 + scales for each matmul type ──
+        for key in ["wq", "wk", "wv", "wo", "w1", "w2", "w3"]:
+            w_int8, w_scales = quantized[key]
             f.write(w_int8.tobytes())
+            f.write(w_scales.tobytes())
 
-        # ── FP32 scales section (FFN: W1, W3 only) ──
-        for key in ["w1", "w3"]:
-            _, scales = quantized[key]
-            f.write(scales.tobytes())
+        # CLS (INT8 + scales) if not tied
+        if not tied and cls_int8 is not None:
+            f.write(cls_int8.tobytes())
+            f.write(cls_scales.tobytes())
 
-        # ── FP32 non-quant weights section ──
-        # 1. Embedding
+        # ── FP32 weights ──
+        # Embedding
         f.write(weights["embedding"].ravel().astype(np.float32).tobytes())
 
-        # 2. Attention RMSNorm
+        # Attention RMSNorm
         f.write(weights["attn_rmsnorm"].ravel().astype(np.float32).tobytes())
 
-        # 3. Wq, Wk, Wv, Wo — kept FP32 (attention projections not quantized)
-        for key in ["wq", "wk", "wv", "wo"]:
-            f.write(weights[key].ravel().astype(np.float32).tobytes())
-
-        # 4. Wq/Wk/Wv bias
+        # Wq/Wk/Wv bias (FP32)
         if has_bias:
             for bias_key in ["wq_bias", "wk_bias", "wv_bias"]:
                 if extras[bias_key] is not None:
                     f.write(extras[bias_key].ravel().astype(np.float32).tobytes())
 
-        # 5. FFN RMSNorm
+        # FFN RMSNorm
         f.write(weights["ffn_rmsnorm"].ravel().astype(np.float32).tobytes())
 
-        # 6. W2 (down) — kept FP32 due to large K=4864
-        f.write(weights["w2"].ravel().astype(np.float32).tobytes())
-
-        # 7. Final RMSNorm
+        # Final RMSNorm
         f.write(weights["final_rmsnorm"].ravel().astype(np.float32).tobytes())
 
-        # 7. RoPE freqs
+        # RoPE freqs
         f.write(weights["freqs_cos"].ravel().astype(np.float32).tobytes())
         f.write(weights["freqs_sin"].ravel().astype(np.float32).tobytes())
 
-        # 8. CLS — shared with embedding (tied), skip (W1/W3 already in INT8 section)
-
-        # 9. Q/K norm
+        # Q/K norm
         if has_qk_norm and extras["q_norm"] is not None:
             f.write(extras["q_norm"].ravel().astype(np.float32).tobytes())
             f.write(extras["k_norm"].ravel().astype(np.float32).tobytes())
 
     file_size = os.path.getsize(output_path)
-    fp32_size_est = total_int8_elems * 4  # what it would be in FP32
-    actual_int8_size = total_int8_elems * 1  # actual INT8
-    scale_size = total_scale_elems * 4
+    total_int8_bytes = sum(
+        w_int8.nbytes for w_int8, _ in quantized.values()
+    )
     print(f"\nOutput: {output_path} ({file_size / (1024**3):.2f} GB)")
-    print(f"  INT8 weight section: {actual_int8_size / (1024**2):.1f} MB")
-    print(f"  Scale section:       {scale_size / 1024:.1f} KB")
-    print(f"  Compression ratio:   {fp32_size_est / (actual_int8_size + scale_size):.2f}x")
+    print(f"  INT8 data: {total_int8_bytes / (1024**2):.1f} MB")
+    print(f"  Compression vs FP32 matmul weights: {file_size / (1024**3):.2f} GB total")
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Per-channel symmetric INT8 weight-only quantization for my_cuda_vllm"
-    )
+    parser = argparse.ArgumentParser(description="INT8 quantization for my_cuda_vllm")
     parser.add_argument("input", help="FP32 .bin file path")
     parser.add_argument("--output", "-o", required=True, help="Output INT8 .bin file path")
     args = parser.parse_args()
 
     print(f"Loading FP32 model: {args.input}")
     config, weights, extras = load_fp32_bin(args.input)
-
     write_int8_bin(args.output, config, weights, extras)
 
 
