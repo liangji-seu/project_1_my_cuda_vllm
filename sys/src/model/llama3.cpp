@@ -577,7 +577,6 @@ op::EmbeddingOutput LLama2Model::embed_next_token(int32_t token_id) {
   auto& input_tokens = get_buffer(ModelBufferType::kInputTokens);
   auto& input_embeddings = get_buffer(ModelBufferType::kInputEmbeddings);
 
-  // 确保 shape 正确 (单 token)
   if (input_tokens.get_size() != 1) {
     input_tokens.reshape({1});
   }
@@ -586,21 +585,33 @@ op::EmbeddingOutput LLama2Model::embed_next_token(int32_t token_id) {
     input_embeddings.reshape({1, static_cast<size_t>(config_->dim_)});
   }
 
-  // token 已在 GPU kInputTokens 中 (由 post_processing 写入), 无需拷贝
+  // 持久 GPU int32 buffer: 单 token decode 时 token_num 恒为 1
+  // 避免每次 cudaMalloc + 同步 cudaMemcpy + cudaFree
+  static int32_t* d_one = nullptr;
+  if (!d_one && device_type_ == base::DeviceType_t::GPU) {
+    cudaMalloc(&d_one, sizeof(int32_t));
+    int32_t one = 1;
+    cudaMemcpy(d_one, &one, sizeof(int32_t), cudaMemcpyHostToDevice);
+  }
 
   auto cpu_alloc = base::CPUDeviceControllerFactory::get_instance();
-  tensor::Tensor input_token_num(tensor::DataType_t::int32, {1}, true, cpu_alloc);
-  *const_cast<int32_t*>(static_cast<const int32_t*>(input_token_num.get_ptr())) = 1;
-
+  tensor::Tensor input_token_num(tensor::DataType_t::int32, {1});
   if (device_type_ == base::DeviceType_t::GPU) {
-    input_token_num.to("cuda", nullptr);
+    // 直接包装持久 GPU buffer, 零拷贝
+    auto cu_alloc = base::GPUDeviceControllerFactory::get_instance();
+    auto cu_buf = std::make_shared<base::Buffer>(
+        sizeof(int32_t), d_one, base::DeviceType_t::GPU, cu_alloc, true);
+    input_token_num.assign(cu_buf);
+  } else {
+    input_token_num = tensor::Tensor(tensor::DataType_t::int32, {1}, true, cpu_alloc);
+    *const_cast<int32_t*>(static_cast<const int32_t*>(input_token_num.get_ptr())) = 1;
   }
 
   CHECK(llama_layers_->embedding_layer_ != nullptr);
   STATUS_CHECK(llama_layers_->embedding_layer_->forward(
       input_tokens, input_token_num, input_embeddings));
 
-  (void)token_id;  // 仅用于 CPU 参考显示, GPU 侧已由 post_processing 写入
+  (void)token_id;
   op::EmbeddingOutput output(input_tokens, input_embeddings, input_token_num);
   return output;
 }

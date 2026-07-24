@@ -5,7 +5,7 @@ namespace base {
 //buffer创建对象，默认必须是内部自行申请内存。且立刻当场分配
 Buffer::Buffer(size_t byte_size,
                void* ptr,
-               
+
                DeviceType_t buffer_device_type,
                std::shared_ptr<DeviceController> controller,
                bool flag_is_external
@@ -18,6 +18,8 @@ Buffer::Buffer(size_t byte_size,
         device_type = controller->get_device_type();
         this->flag_is_external = false;
         this->ptr = controller->mem_alloc(byte_size);
+    } else if (ptr) {
+        device_type = buffer_device_type;
     }
 }
 
