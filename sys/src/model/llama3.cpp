@@ -210,28 +210,33 @@ void LLama2Model::create_param_quant_layers() {
   // raw_int8->scale_data        已指向 scale 区段起始位置
   //
   // 非量化区段起始位置 = scale_data + total_scale_count
-  // total_scale_count = sum of N for each INT8 weight (per-channel)
+  // total_scale_count = sum of N * ceil(K / group_size) for each INT8 weight (per-group)
+
+  constexpr size_t GROUP_SIZE = 64;
 
   size_t int8_off = 0;     // offset in int8 elements from weight_data
   size_t scale_off = 0;    // offset in float elements from scale_data
   size_t fp32_off = 0;     // offset in float elements from non-quant section start
 
-  // Helper: load INT8 weight + its per-channel scale
+  // Helper: load INT8 weight + its per-group scales
   auto load_int8_weight = [&](const std::shared_ptr<op::MatmulLayer>& layer,
                                size_t N, size_t K) {
+    size_t num_groups = (K + GROUP_SIZE - 1) / GROUP_SIZE;
+
     // INT8 weight: N*K int8 elements
     layer->set_weight(0, {N, K},
                       static_cast<const int8_t*>(raw_model_data_->weight_data) + int8_off,
                       cpu_device_type, tensor::DataType_t::int8);
+    layer->set_group_size(GROUP_SIZE);
     int8_off += N * K;
 
-    // per-channel scale: N float elements
+    // per-group scale: N * num_groups float elements
     auto cpu_alloc = base::CPUDeviceControllerFactory::get_instance();
-    tensor::Tensor scale_tensor(tensor::DataType_t::fp32, {N}, false, nullptr,
+    tensor::Tensor scale_tensor(tensor::DataType_t::fp32, {N * num_groups}, false, nullptr,
                                 const_cast<float*>(raw_int8->scale(scale_off)));
     scale_tensor.set_device_type(cpu_device_type);
     layer->set_scales(scale_tensor);
-    scale_off += N;
+    scale_off += N * num_groups;
   };
 
   // Helper: load FP32 weight from the non-quant section
@@ -244,16 +249,11 @@ void LLama2Model::create_param_quant_layers() {
   };
 
   // ── Pre-compute total_scale_count to know where non-quant section starts ──
-  // This is equivalent to: sum of N for each INT8 weight
+  // Only W1 and W3 are INT8; W2 kept FP32 due to large K=4864
+  auto num_groups = [](size_t K) { return (K + GROUP_SIZE - 1) / GROUP_SIZE; };
   size_t total_scale_count = 0;
-  total_scale_count += config_->layer_num_ * config_->q_dim_;       // Wq
-  total_scale_count += config_->layer_num_ * config_->kv_dim_;     // Wk
-  total_scale_count += config_->layer_num_ * config_->kv_dim_;     // Wv
-  total_scale_count += config_->layer_num_ * dim;                   // Wo
-  total_scale_count += config_->layer_num_ * hidden_dim;            // W1
-  total_scale_count += config_->layer_num_ * dim;                   // W2
-  total_scale_count += config_->layer_num_ * hidden_dim;            // W3
-  total_scale_count += config_->vocab_size_;                        // CLS
+  total_scale_count += config_->layer_num_ * hidden_dim * num_groups(dim);  // W1
+  total_scale_count += config_->layer_num_ * hidden_dim * num_groups(dim);  // W3
   // Non-quant section starts here:
   const float* fp32_base = raw_int8->scale(total_scale_count);
 
@@ -273,20 +273,21 @@ void LLama2Model::create_param_quant_layers() {
   fp32_off += static_cast<size_t>(dim) * config_->vocab_size_;
 
   // ════════════════════════════════════════════════════════════════
-  // Attention RMSNorm weights (FP32, before QKV in file layout)
+  // Attention RMSNorm weights (FP32)
   // ════════════════════════════════════════════════════════════════
   size_t rmsnorm_pos_attn = fp32_off;
   fp32_off += config_->layer_num_ * dim;
 
   // ════════════════════════════════════════════════════════════════
-  // INT8 matmul weights: Wq, Wk, Wv, Wo
+  // Wq, Wk, Wv, Wo — kept FP32 for attention accuracy
   // ════════════════════════════════════════════════════════════════
   for (int32_t i = 0; i < config_->layer_num_; ++i) {
-    auto wq = std::make_shared<op::MatmulLayer>(device_type_, 1.0f, has_bias, true);
-    load_int8_weight(wq, config_->q_dim_, dim);
+    auto wq = std::make_shared<op::MatmulLayer>(device_type_, 1.0f, has_bias, false);
+    wq->set_weight(0, {static_cast<size_t>(config_->q_dim_), static_cast<size_t>(dim)},
+                   fp32_ptr(fp32_off), cpu_device_type);
+    fp32_off += config_->q_dim_ * dim;
     llama_layers_->wq_layers_.push_back(wq);
   }
-  // Bias for Wq (FP32, in non-quant section)
   if (has_bias) {
     for (int32_t i = 0; i < config_->layer_num_; ++i) {
       auto wq = std::static_pointer_cast<op::MatmulLayer>(llama_layers_->wq_layers_[i]);
@@ -297,8 +298,10 @@ void LLama2Model::create_param_quant_layers() {
   }
 
   for (int32_t i = 0; i < config_->layer_num_; ++i) {
-    auto wk = std::make_shared<op::MatmulLayer>(device_type_, 1.0f, has_bias, true);
-    load_int8_weight(wk, config_->kv_dim_, dim);
+    auto wk = std::make_shared<op::MatmulLayer>(device_type_, 1.0f, has_bias, false);
+    wk->set_weight(0, {static_cast<size_t>(config_->kv_dim_), static_cast<size_t>(dim)},
+                   fp32_ptr(fp32_off), cpu_device_type);
+    fp32_off += config_->kv_dim_ * dim;
     llama_layers_->wk_layers_.push_back(wk);
   }
   if (has_bias) {
@@ -311,8 +314,10 @@ void LLama2Model::create_param_quant_layers() {
   }
 
   for (int32_t i = 0; i < config_->layer_num_; ++i) {
-    auto wv = std::make_shared<op::MatmulLayer>(device_type_, 1.0f, has_bias, true);
-    load_int8_weight(wv, config_->kv_dim_, dim);
+    auto wv = std::make_shared<op::MatmulLayer>(device_type_, 1.0f, has_bias, false);
+    wv->set_weight(0, {static_cast<size_t>(config_->kv_dim_), static_cast<size_t>(dim)},
+                   fp32_ptr(fp32_off), cpu_device_type);
+    fp32_off += config_->kv_dim_ * dim;
     llama_layers_->wv_layers_.push_back(wv);
   }
   if (has_bias) {
@@ -325,8 +330,10 @@ void LLama2Model::create_param_quant_layers() {
   }
 
   for (int32_t i = 0; i < config_->layer_num_; ++i) {
-    auto wo = std::make_shared<op::MatmulLayer>(device_type_, 1.0f, false, true);
-    load_int8_weight(wo, dim, config_->q_dim_);
+    auto wo = std::make_shared<op::MatmulLayer>(device_type_);
+    wo->set_weight(0, {static_cast<size_t>(dim), static_cast<size_t>(config_->q_dim_)},
+                   fp32_ptr(fp32_off), cpu_device_type);
+    fp32_off += dim * config_->q_dim_;
     llama_layers_->wo_layers_.push_back(wo);
   }
 
@@ -337,7 +344,7 @@ void LLama2Model::create_param_quant_layers() {
   fp32_off += config_->layer_num_ * dim;
 
   // ════════════════════════════════════════════════════════════════
-  // INT8 matmul weights: W1, W2, W3
+  // INT8 matmul weights: W1 (gate), W3 (up). W2 (down) kept FP32
   // ════════════════════════════════════════════════════════════════
   for (int32_t i = 0; i < config_->layer_num_; ++i) {
     auto w1 = std::make_shared<op::MatmulLayer>(device_type_, 1.0f, false, true);
@@ -345,9 +352,12 @@ void LLama2Model::create_param_quant_layers() {
     llama_layers_->w1_layers_.push_back(w1);
   }
 
+  // W2 (down) — FP32 from non-quant section
   for (int32_t i = 0; i < config_->layer_num_; ++i) {
-    auto w2 = std::make_shared<op::MatmulLayer>(device_type_, 1.0f, false, true);
-    load_int8_weight(w2, dim, hidden_dim);
+    auto w2 = std::make_shared<op::MatmulLayer>(device_type_);
+    w2->set_weight(0, {static_cast<size_t>(dim), static_cast<size_t>(hidden_dim)},
+                   fp32_ptr(fp32_off), cpu_device_type);
+    fp32_off += dim * hidden_dim;
     llama_layers_->w2_layers_.push_back(w2);
   }
 
@@ -370,19 +380,18 @@ void LLama2Model::create_param_quant_layers() {
   fp32_off += 2 * config_->seq_len_ * config_->head_size_;
 
   // ════════════════════════════════════════════════════════════════
-  // CLS layer (INT8 if not tied, otherwise shared with embedding which is FP32)
+  // CLS layer — FP32 (shared with embedding when tied)
   // ════════════════════════════════════════════════════════════════
-  if (!config_->is_shared_weight_) {
-    llama_layers_->cls_layer_ =
-        std::make_shared<op::MatmulLayer>(device_type_, 1.0f, false, true);
-    load_int8_weight(std::static_pointer_cast<op::MatmulLayer>(llama_layers_->cls_layer_),
-                     config_->vocab_size_, dim);
-  } else {
-    llama_layers_->cls_layer_ =
-        std::make_shared<op::MatmulLayer>(device_type_);
+  llama_layers_->cls_layer_ = std::make_shared<op::MatmulLayer>(device_type_);
+  if (config_->is_shared_weight_) {
     std::dynamic_pointer_cast<op::LayerParam>(llama_layers_->cls_layer_)
         ->set_weight(0, {static_cast<size_t>(config_->vocab_size_), static_cast<size_t>(dim)},
                      fp32_ptr(0), cpu_device_type);  // shared with embedding
+  } else {
+    std::dynamic_pointer_cast<op::LayerParam>(llama_layers_->cls_layer_)
+        ->set_weight(0, {static_cast<size_t>(config_->vocab_size_), static_cast<size_t>(dim)},
+                     fp32_ptr(fp32_off), cpu_device_type);
+    fp32_off += static_cast<size_t>(config_->vocab_size_) * dim;
   }
 
   // ════════════════════════════════════════════════════════════════

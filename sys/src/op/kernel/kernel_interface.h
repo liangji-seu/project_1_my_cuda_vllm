@@ -98,13 +98,15 @@ typedef void (*Matmul_backend)(
 
 Matmul_backend get_matmul_interface(base::DeviceType_t device_type);
 
-//INT8 矩阵乘（权重 INT8 + per-channel scales，激活值 FP32）
+//INT8 矩阵乘（权重 INT8 + per-group scales，激活值 FP32）
+//scales 形状: [N, ceil(K/group_size)] 扁平化为 1D [N * ceil(K/group_size)]
 typedef void (*MatmulInt8_backend)(
     const tensor::Tensor& input,     // fp32 [M, K]
     const tensor::Tensor& weight,    // int8  [N, K]
-    const tensor::Tensor& scales,    // fp32  [N] per-channel
+    const tensor::Tensor& scales,    // fp32  [N * ceil(K/group_size)] per-group
     const float* bias,               // fp32  [N] optional
     const tensor::Tensor& output,    // fp32  [M, N]
+    int32_t group_size,              // K 维度分组大小
     void* stream
 );
 

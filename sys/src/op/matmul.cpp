@@ -45,7 +45,8 @@ base::error::Status MatmulLayer::forward() {
 
   if (is_quant_layer) {
     CHECK(!scales.is_empty()) << "Quantized matmul missing scales";
-    kernel::get_matmul_int8_interface(device_type)(input, weight, scales, bias, output, stream_ptr);
+    int32_t gs = static_cast<int32_t>(group_size > 0 ? group_size : 128);
+    kernel::get_matmul_int8_interface(device_type)(input, weight, scales, bias, output, gs, stream_ptr);
   } else {
     kernel::get_matmul_interface(device_type)(input, weight, bias, scale_, output, stream_ptr);
   }

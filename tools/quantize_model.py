@@ -195,28 +195,38 @@ def load_fp32_bin(path):
     }
 
 
-def quantize_per_channel_symmetric(w_fp32: np.ndarray):
+def quantize_per_group_symmetric(w_fp32: np.ndarray, group_size: int = 128):
     """
-    Per-channel symmetric INT8 quantization.
+    Per-group symmetric INT8 quantization.
 
     Args:
         w_fp32: FP32 weight matrix [N, K]
+        group_size: number of K elements per quantization group
     Returns:
         w_int8: int8 quantized weights [N, K]
-        scales: per-channel scales [N]
+        scales: per-group scales [N * num_groups]
     """
-    N = w_fp32.shape[0]
-    # per-channel max absolute value
-    amax = np.max(np.abs(w_fp32), axis=1)  # [N]
-    # Avoid division by zero
-    amax = np.maximum(amax, 1e-12)
-    scales = amax / 127.0
+    N, K = w_fp32.shape
+    num_groups = (K + group_size - 1) // group_size
 
-    # Quantize
-    w_quant = w_fp32 / scales[:, np.newaxis]  # [N, K]
-    w_int8 = np.clip(np.round(w_quant), -127, 127).astype(np.int8)
+    w_int8 = np.zeros((N, K), dtype=np.int8)
+    scales = np.zeros(N * num_groups, dtype=np.float32)
 
-    return w_int8, scales.astype(np.float32)
+    for n in range(N):
+        row = w_fp32[n]
+        for g in range(num_groups):
+            start = g * group_size
+            end = min(start + group_size, K)
+            group_vals = row[start:end]
+            amax = np.max(np.abs(group_vals))
+            amax = max(amax, 1e-12)
+            scale = amax / 127.0
+            scales[n * num_groups + g] = scale
+            w_int8[n, start:end] = np.clip(
+                np.round(group_vals / scale), -127, 127
+            ).astype(np.int8)
+
+    return w_int8, scales
 
 
 def write_int8_bin(output_path, config, weights, extras):
@@ -235,41 +245,35 @@ def write_int8_bin(output_path, config, weights, extras):
     tied = config["tied_embeddings"]
 
     # Quantize all matmul weights
-    print("\nQuantizing weights...")
+    print("\nQuantizing FFN weights only (per-group, group_size=64)...")
+    print("  Attention projections (Wq/Wk/Wv/Wo) kept FP32")
     quantized = {}
     total_int8_elems = 0
     total_scale_elems = 0
+    GROUP_SIZE = 64
 
-    for key in ["wq", "wk", "wv", "wo", "w1", "w2", "w3"]:
+    # Only quantize W1(gate) and W3(up) — W2(down) kept FP32 due to large K=4864
+    for key in ["w1", "w3"]:
         w_fp32 = weights[key]  # [L, N, K]
         L, N, K = w_fp32.shape
+        num_groups = (K + GROUP_SIZE - 1) // GROUP_SIZE
         w_int8_list = []
         scale_list = []
         for i in range(L):
-            wi, si = quantize_per_channel_symmetric(w_fp32[i])
+            wi, si = quantize_per_group_symmetric(w_fp32[i], GROUP_SIZE)
             w_int8_list.append(wi.ravel())
             scale_list.append(si.ravel())
         quantized[key] = (
-            np.concatenate(w_int8_list),    # [L*N*K] int8
-            np.concatenate(scale_list),     # [L*N] float32
+            np.concatenate(w_int8_list),
+            np.concatenate(scale_list),
         )
         total_int8_elems += L * N * K
-        total_scale_elems += L * N
-        print(f"  {key}: [{L}×{N}×{K}] → int8 {L*N*K} elems, scales {L*N}")
+        total_scale_elems += L * N * num_groups
+        print(f"  {key}: [{L}×{N}×{K}] groups={num_groups} → int8 {L*N*K} elems, scales {L*N*num_groups}")
 
-    # CLS if not tied
-    cls_int8 = None
-    cls_scales = None
-    if not tied:
-        cls_fp32 = extras["cls_weight"]  # [vocab_size, dim]
-        cls_int8, cls_scales = quantize_per_channel_symmetric(cls_fp32)
-        cls_int8 = cls_int8.ravel()
-        cls_scales = cls_scales.ravel()
-        total_int8_elems += vocab_size * dim
-        total_scale_elems += vocab_size
-        print(f"  cls: [{vocab_size}×{dim}] → INT8 {vocab_size*dim} elems, scales {vocab_size}")
-    else:
-        print("  cls: shared with embedding (FP32)")
+    # CLS kept FP32 (shared with embedding)
+    print("  cls: shared with embedding (FP32)")
+    print("  Wq/Wk/Wv/Wo: FP32 (not quantized)")
 
     print(f"\nTotal INT8 elements: {total_int8_elems}")
     print(f"Total scale elements: {total_scale_elems}")
@@ -289,47 +293,49 @@ def write_int8_bin(output_path, config, weights, extras):
         f.write(struct.pack("i", 0))             # group_size = 0 (not used)
         f.write(struct.pack("q", total_int8_elems))  # 8 bytes
 
-        # ── INT8 weights section ──
-        for key in ["wq", "wk", "wv", "wo", "w1", "w2", "w3"]:
+        # ── INT8 weights section (FFN: W1, W3 only) ──
+        for key in ["w1", "w3"]:
             w_int8, _ = quantized[key]
             f.write(w_int8.tobytes())
-        if cls_int8 is not None:
-            f.write(cls_int8.tobytes())
 
-        # ── FP32 scales section ──
-        for key in ["wq", "wk", "wv", "wo", "w1", "w2", "w3"]:
+        # ── FP32 scales section (FFN: W1, W3 only) ──
+        for key in ["w1", "w3"]:
             _, scales = quantized[key]
             f.write(scales.tobytes())
-        if cls_scales is not None:
-            f.write(cls_scales.tobytes())
 
         # ── FP32 non-quant weights section ──
-        # Embedding
+        # 1. Embedding
         f.write(weights["embedding"].ravel().astype(np.float32).tobytes())
 
-        # Attention RMSNorm
+        # 2. Attention RMSNorm
         f.write(weights["attn_rmsnorm"].ravel().astype(np.float32).tobytes())
 
-        # Wq/Wk/Wv bias
+        # 3. Wq, Wk, Wv, Wo — kept FP32 (attention projections not quantized)
+        for key in ["wq", "wk", "wv", "wo"]:
+            f.write(weights[key].ravel().astype(np.float32).tobytes())
+
+        # 4. Wq/Wk/Wv bias
         if has_bias:
             for bias_key in ["wq_bias", "wk_bias", "wv_bias"]:
                 if extras[bias_key] is not None:
                     f.write(extras[bias_key].ravel().astype(np.float32).tobytes())
 
-        # FFN RMSNorm
+        # 5. FFN RMSNorm
         f.write(weights["ffn_rmsnorm"].ravel().astype(np.float32).tobytes())
 
-        # Final RMSNorm
+        # 6. W2 (down) — kept FP32 due to large K=4864
+        f.write(weights["w2"].ravel().astype(np.float32).tobytes())
+
+        # 7. Final RMSNorm
         f.write(weights["final_rmsnorm"].ravel().astype(np.float32).tobytes())
 
-        # RoPE freqs
+        # 7. RoPE freqs
         f.write(weights["freqs_cos"].ravel().astype(np.float32).tobytes())
         f.write(weights["freqs_sin"].ravel().astype(np.float32).tobytes())
 
-        # CLS (only if tied — shared with embedding, skip because we already wrote embedding)
-        # If not tied, CLS is in the INT8 section already
+        # 8. CLS — shared with embedding (tied), skip (W1/W3 already in INT8 section)
 
-        # Q/K norm
+        # 9. Q/K norm
         if has_qk_norm and extras["q_norm"] is not None:
             f.write(extras["q_norm"].ravel().astype(np.float32).tobytes())
             f.write(extras["k_norm"].ravel().astype(np.float32).tobytes())
