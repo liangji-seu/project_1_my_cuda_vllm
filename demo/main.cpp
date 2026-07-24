@@ -197,10 +197,6 @@ static std::vector<int32_t> generate(
     } else {
       // ---- Decode step ----
       is_prompt = false;
-      if (first_decode) {
-        first_decode = false;
-        // Prefill just finished — record prefill end
-      }
 
       // Per-step decode timing
       profiler->set_cpu_start();
@@ -210,6 +206,7 @@ static std::vector<int32_t> generate(
       // 后续 decode steps: token 已在 GPU (post_processing 闭环写入), 走 embed_next_token 零拷贝
       op::EmbeddingOutput token_embedding;
       if (first_decode) {
+        first_decode = false;
         tokens = std::vector<int32_t>{next};
         token_embedding = model.embedding(tokens);
       } else {

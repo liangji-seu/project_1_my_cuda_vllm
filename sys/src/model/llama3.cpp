@@ -594,15 +594,14 @@ op::EmbeddingOutput LLama2Model::embed_next_token(int32_t token_id) {
     cudaMemcpy(d_one, &one, sizeof(int32_t), cudaMemcpyHostToDevice);
   }
 
-  auto cpu_alloc = base::CPUDeviceControllerFactory::get_instance();
-  tensor::Tensor input_token_num(tensor::DataType_t::int32, {1});
+  tensor::Tensor input_token_num;
   if (device_type_ == base::DeviceType_t::GPU) {
-    // 直接包装持久 GPU buffer, 零拷贝
-    auto cu_alloc = base::GPUDeviceControllerFactory::get_instance();
-    auto cu_buf = std::make_shared<base::Buffer>(
-        sizeof(int32_t), d_one, base::DeviceType_t::GPU, cu_alloc, true);
-    input_token_num.assign(cu_buf);
+    // 直接包装持久 GPU buffer, 零拷贝, 避免 assign 触发 device type mismatch
+    input_token_num = tensor::Tensor(tensor::DataType_t::int32, {1},
+                                     false, nullptr, d_one);
+    input_token_num.set_device_type(base::DeviceType_t::GPU);
   } else {
+    auto cpu_alloc = base::CPUDeviceControllerFactory::get_instance();
     input_token_num = tensor::Tensor(tensor::DataType_t::int32, {1}, true, cpu_alloc);
     *const_cast<int32_t*>(static_cast<const int32_t*>(input_token_num.get_ptr())) = 1;
   }
